@@ -105,11 +105,11 @@ Q54-Q83 settle the terminal-first scope, compact layout, standalone styling, set
 
 ## Interview status and next step
 
-Q1-Q53 record the earlier approvals. Planning is reopened following the user's review on 2026-10-09: storage may be too broad for the first build, and settings and a concrete UI specification were never completed. No implementation or benchmarks have started.
+Q1-Q53 record the earlier approvals. The user's review on 2026-10-09 reopened planning to reduce backend scope and specify the missing UI/settings behavior. Q54-Q83 then settled the terminal-first direction, and the interview is now closed. A working terminal development slice is now implemented; see [prototype status](prototype-status.md). Comparative benchmarks have not started.
 
 The [product brief](product-brief.md) restates the intended terminal experience and separates live-session persistence from saved data. The [prototype plan](prototype-plan.md) now starts with the accepted terminal-first scope and retains the former backend-first sequence as history.
 
-The user confirmed the terminal-focused product brief and moved the design documents into the RustRover project. Q54-Q83 are accepted, including settings, storage, clipboard/history defaults, shortcut bindings, tab titles, split profiles, and paste behavior. The compact refinement is the layout baseline. Opterm must be standalone, with no Crateon branding, named presets, token dependency, application code, or product integration. On 2026-10-09 the user asked to stop extending the interview. There are no more required design rounds before a prototype; ordinary implementation details are not new approval gates. No implementation or benchmarks have started.
+The user confirmed the terminal-focused product brief and moved the design documents into the RustRover project. Q54-Q83 are accepted, including settings, storage, clipboard/history defaults, shortcut bindings, tab titles, split profiles, and paste behavior. The compact refinement is the layout baseline. Opterm must be standalone, with no Crateon branding, named presets, token dependency, application code, or product integration. On 2026-10-09 the user asked to stop extending the interview. There are no more required design rounds before a prototype; ordinary implementation details are not new approval gates. A working terminal development slice is now implemented; see [prototype status](prototype-status.md). Comparative benchmarks have not started.
 
 ## Accepted first-version and settings decisions: Q54-Q83
 
@@ -152,7 +152,7 @@ The [mockup files and generation prompts](design/mockups/README.md) record the a
 
 ## Evaluation prerequisites and present evidence
 
-- The workspace currently contains design documentation only; there is no Opterm implementation or benchmark result to inspect.
+- The workspace now contains the first Rust terminal slice, tested with native Linux PTY fixtures and an isolated X11 GUI check. See [prototype status](prototype-status.md) for implemented features and limits; comparative benchmark results are not available.
 - The current execution host is Linux x86-64 with Rust 1.98.0 and Cargo 1.98.0 available. Codex CLI and Claude Code executable paths are also present; authentication, interactive behavior, and Opterm integration are untested. These checks establish local tool availability, not a chosen project toolchain or demonstrated library compatibility.
 - macOS, Windows, and additional CPU/display results remain unverified until native runs are available. Cross-compilation alone cannot establish their input, accessibility, lifecycle, or measured-latency requirements.
 - Prototype evidence must preserve Q22's stable-release requirements even when a minimal evaluation view has incomplete feature coverage.

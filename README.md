@@ -4,7 +4,19 @@ A lightweight cross-platform terminal for macOS, Linux, and Windows, with built-
 
 ## Current status
 
-The product design is documented and the interview is closed. This repository contains specifications and illustrative mockups; application code and benchmarks have not been implemented yet.
+The first Rust terminal slice runs a real local shell in the approved thin layout, with tabs, terminal parsing, resize, selection, copy/paste, and scrollback. The design interview is closed. See [prototype status and limitations](docs/prototype-status.md).
+
+This is an internal development slice: closing the app currently ends its shells. The independent session service, remaining first-version features, native macOS/Windows validation, and benchmarks are still ahead.
+
+## Run
+
+```sh
+cargo run --release
+# Launch a CLI agent instead of the default shell:
+cargo run --release -- -- codex
+```
+
+Use an installed Rust toolchain and a native desktop session. The first build downloads dependencies. Linux X11 has a focused GUI check; other native platforms remain unverified.
 
 ## Project documents
 

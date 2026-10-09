@@ -1,6 +1,6 @@
 # Opterm UI, settings, and first-version specification
 
-Status: Q54-Q83 accepted. The design interview is closed; no further design round is required before a prototype. Opterm is standalone: earlier Crateon reuse is superseded. Routine reversible interface details will be resolved in the prototype. See [the design interview](design.md). This remains a design specification, not an implemented terminal.
+Status: Q54-Q83 accepted. The design interview is closed; no further design round is required before a prototype. Opterm is standalone: earlier Crateon reuse is superseded. Routine reversible interface details will be resolved in the prototype. See [the design interview](design.md). This is the approved design specification; [prototype status](prototype-status.md) distinguishes implemented behavior from remaining requirements.
 
 ## First version — Q54 accepted with additions
 
@@ -142,4 +142,4 @@ Q74 accepts Clear cache, limited to recreatable data. It preserves settings, pro
 
 ## Next step
 
-The interview is closed with Q54-Q83 accepted. No more product decision rounds are required before the terminal-first prototype in [the prototype plan](prototype-plan.md). Resolve routine reversible UI details there and bring back only material scope changes or evidence-based technical tradeoffs. Toolkit selection and native compatibility remain unverified; no application has been implemented.
+The interview is closed with Q54-Q83 accepted. No more product decision rounds are required before the terminal-first prototype in [the prototype plan](prototype-plan.md). Resolve routine reversible UI details there and bring back only material scope changes or evidence-based technical tradeoffs. The first working slice uses a provisional egui/eframe renderer. See [prototype status](prototype-status.md); final toolkit selection and remaining native coverage still require evidence.
