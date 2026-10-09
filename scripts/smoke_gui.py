@@ -34,6 +34,7 @@ X.XKeycodeToKeysym.restype = W
 X.XSetInputFocus.argtypes = [D, W, C.c_int, W]
 X.XMapWindow.argtypes = [D, W]
 X.XSync.argtypes = [D, C.c_int]
+X.XMoveWindow.argtypes = [D, W, C.c_int, C.c_int]
 X.XResizeWindow.argtypes = [D, W, C.c_uint, C.c_uint]
 X.XFlush.argtypes = [D]
 X.XCloseDisplay.argtypes = [D]
@@ -99,11 +100,11 @@ def main():
     binary = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else TARGET / 'debug/opterm'
     try:
         display = ':' + server.stdout.readline().decode().strip()
-        env = {**os.environ, 'DISPLAY': display, 'LIBGL_ALWAYS_SOFTWARE': '1', 'WINIT_UNIX_BACKEND': 'x11', 'OPTERM_STATE_DIR': state.name}
+        env = {**os.environ, 'DISPLAY': display, 'LIBGL_ALWAYS_SOFTWARE': '1', 'WINIT_UNIX_BACKEND': 'x11', 'OPTERM_STATE_DIR': state.name + '/runtime', 'OPTERM_CONFIG_DIR': state.name + '/settings', 'OPTERM_RECOVERY_DIR': state.name + '/recovery'}
         app = subprocess.Popen([str(binary), '--', '/bin/sh'], cwd=ROOT, env=env)
         dpy = wait_until(lambda: X.XOpenDisplay(display.encode()))
         root = X.XDefaultRootWindow(dpy)
-        def find_windows():
+        def find_windows(prefix="Opterm"):
             root_return, parent, children, count = W(), W(), C.POINTER(W)(), C.c_uint()
             X.XQueryTree(dpy, root, C.byref(root_return), C.byref(parent), C.byref(children), C.byref(count))
             found = []
@@ -112,7 +113,7 @@ def main():
                 if X.XFetchName(dpy, children[i], C.byref(name)) and name:
                     title = C.string_at(name).decode(errors='replace')
                     X.XFree(name)
-                    if title.startswith('Opterm'):
+                    if title.startswith(prefix):
                         found.append(children[i])
             if children:
                 X.XFree(children)
@@ -199,6 +200,108 @@ def main():
             screenshot(display)
             raise
         print('Native selection, copy, and paste: passed')
+        # Settings live in a separate native window. All preferences paths are isolated.
+        def open_settings():
+            key(0xffe3, 1); key(0xffe1, 1); key(ord(','), 1); key(ord(','), 0); key(0xffe1, 0); key(0xffe3, 0)
+            X.XFlush(dpy)
+            settings = wait_until(lambda: next(iter(find_windows("Opterm Settings")), None))
+            X.XMoveWindow(dpy, settings, 0, 0)
+            X.XMapWindow(dpy, settings)
+            X.XSetInputFocus(dpy, settings, 1, 0)
+            X.XFlush(dpy)
+            time.sleep(0.4)
+            return settings
+        def click(x, y):
+            XT.XTestFakeMotionEvent(dpy, -1, x, y, 0)
+            XT.XTestFakeButtonEvent(dpy, 1, 1, 0); XT.XTestFakeButtonEvent(dpy, 1, 0, 0)
+            X.XFlush(dpy); time.sleep(0.15)
+        def field(value):
+            click(175, 118)
+            key(0xffe3, 1); key(ord('a'), 1); key(ord('a'), 0); key(0xffe3, 0)
+            X.XFlush(dpy); time.sleep(0.15)
+            type_text(str(value))
+            time.sleep(0.15)
+            type_text('\n')
+            time.sleep(0.2)
+        def terminal_focus():
+            X.XSetInputFocus(dpy, window, 1, 0); X.XFlush(dpy); time.sleep(0.2)
+        config = Path(env['OPTERM_CONFIG_DIR']) / 'settings.toml'
+        backup = Path(env['OPTERM_RECOVERY_DIR']) / 'last-valid-settings.toml'
+        before_settings = Path(state.name) / 'before-settings'
+        type_text("printf '%s:' $$ > '" + str(before_settings) + "'; stty size >> '" + str(before_settings) + "'\n")
+        wait_until(before_settings.exists)
+        settings_window = open_settings()
+        field(18)
+        click(94, 520)  # Cancel
+        wait_until(lambda: not find_windows("Opterm Settings"))
+        assert not config.exists() and not backup.exists(), 'Cancel persisted the draft'
+        terminal_focus()
+        settings_window = open_settings()
+        field(16)
+        click(35, 520)  # Save
+        wait_until(lambda: config.exists() and backup.exists())
+        wait_until(lambda: not find_windows("Opterm Settings"))
+        assert 'font_size = 16.0' in config.read_text(), config.read_text()
+        assert config.read_bytes() == backup.read_bytes()
+        good = backup.read_bytes()
+        terminal_focus()
+        after_settings = Path(state.name) / 'after-settings'
+        type_text("printf '%s:' $$ > '" + str(after_settings) + "'; stty size >> '" + str(after_settings) + "'\n")
+        wait_until(after_settings.exists)
+        before_pid, before_size = before_settings.read_text().split(':')
+        after_pid, after_size = after_settings.read_text().split(':')
+        assert before_pid == after_pid, 'Appearance save restarted the shell'
+        assert before_size != after_size, 'Saved font size did not resize the terminal'
+        settings_window = open_settings()
+        field(18)
+        config.write_bytes(good.replace(b'font_size = 16.0', b'font_size = 15.0'))
+        time.sleep(1.3)
+        click(35, 520)  # Save must report conflict, preserving both draft and external file.
+        assert find_windows("Opterm Settings"), 'Conflicting save closed the draft'
+        assert 'font_size = 15.0' in config.read_text()
+        click(350, 520)  # Explicit Replace file with my draft.
+        wait_until(lambda: not find_windows("Opterm Settings"))
+        assert 'font_size = 18.0' in config.read_text()
+        assert backup.read_bytes() == config.read_bytes()
+        good = backup.read_bytes()
+        terminal_focus()
+        # An unchanged draft must not bypass conflict protection on a second Save.
+        settings_window = open_settings()
+        config.write_text('invalid = [')
+        time.sleep(1.3)
+        click(35, 520); click(35, 520)
+        assert config.read_text() == 'invalid = [' and backup.read_bytes() == good
+        click(94, 520)
+        wait_until(lambda: not find_windows("Opterm Settings"))
+        terminal_focus(); settings_window = open_settings()
+        # Invalid live edits leave both the last-valid backup and current appearance intact.
+        settings_window = wait_until(lambda: next(iter(find_windows("Opterm Settings")), None))
+        X.XMoveWindow(dpy, settings_window, 0, 0)
+        X.XSetInputFocus(dpy, settings_window, 1, 0); X.XFlush(dpy); time.sleep(0.3)
+        assert backup.read_bytes() == good
+        click(100, 496)  # Load recovery into draft.
+        assert config.read_text() == 'invalid = [', 'Restore silently overwrote the file'
+        click(35, 520)
+        wait_until(lambda: config.read_bytes() == good)
+        wait_until(lambda: not find_windows("Opterm Settings"))
+        # A failed Save keeps the native editor open; repairing the destination permits retry.
+        terminal_focus(); settings_window = open_settings(); field(19)
+        backup.parent.chmod(0o500)
+        click(35, 520)
+        assert find_windows("Opterm Settings") and backup.read_bytes() == good and config.read_bytes() == good
+        backup.parent.chmod(0o700)
+        click(35, 520)
+        wait_until(lambda: 'font_size = 19.0' in config.read_text())
+        wait_until(lambda: not find_windows("Opterm Settings"))
+        # Return to accepted defaults so subsequent selection/split geometry checks stay meaningful.
+        terminal_focus(); settings_window = open_settings(); field(14); click(35, 520)
+        wait_until(lambda: not find_windows("Opterm Settings"))
+        assert 'font_size = 14.0' in config.read_text()
+        terminal_focus(); settings_window = open_settings()
+        print('Settings screenshot:', screenshot(display, 'prototype-settings-linux.png'))
+        close_window(settings_window)
+        wait_until(lambda: not find_windows("Opterm Settings")); terminal_focus()
+        print('Settings Save/Cancel, live resize with same shell PID, external conflict/replace, corrupt file recovery, failed Save/retry: passed')
         # Keep a shell variable/PID and background work across actual window exit.
         pid_marker = Path(state.name) / 'pid'
         work_marker = Path(state.name) / 'background'
@@ -339,6 +442,8 @@ def main():
                 app.kill(); app.wait()
         if env:
             subprocess.run([str(binary), '--stop-service'], cwd=ROOT, env=env, timeout=5, check=True, stdout=subprocess.DEVNULL)
+        if env:
+            Path(env['OPTERM_RECOVERY_DIR']).chmod(0o700)
         state.cleanup()
         if dpy:
             X.XCloseDisplay(dpy)

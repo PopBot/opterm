@@ -4,7 +4,7 @@ A lightweight cross-platform terminal for macOS, Linux, and Windows, with built-
 
 ## Current status
 
-The Rust prototype runs a real local shell in the approved thin layout, with tabs, splits, multiple windows, resize, selection, copy/paste, and scrollback. A small background service now keeps shells and terminal programs alive when you close or crash the desktop. Reopening Opterm reconnects to those live sessions. No database is involved. See [prototype status and limitations](docs/prototype-status.md).
+The Rust prototype runs a real local shell in the approved thin layout, with tabs, splits, multiple windows, resize, selection, copy/paste, and scrollback. A small background service now keeps shells and terminal programs alive when you close or crash the desktop. Reopening Opterm reconnects to those live sessions. Appearance settings now have a compact separate window, TOML configuration, and a last-valid recovery backup. No database is involved. See [prototype status and limitations](docs/prototype-status.md).
 
 ## Run locally
 
@@ -31,6 +31,7 @@ Splits keep the thin layout, with draggable dividers and a subtle outline around
 
 | Action | Linux / Windows | macOS |
 | --- | --- | --- |
+| Settings | Ctrl+Shift+, | Cmd+, |
 | New window | Ctrl+Shift+N | Cmd+N |
 | Split right | Ctrl+Shift+E | Cmd+D |
 | Split below | Ctrl+Shift+O | Cmd+Shift+D |
@@ -40,6 +41,8 @@ Splits keep the thin layout, with draggable dividers and a subtle outline around
 | Detach focused pane | Ctrl+Shift+W | Cmd+W |
 
 Terminal output supports ANSI colors, the 256-color palette, and 24-bit RGB. New sessions advertise `TERM=xterm-256color` / `COLORTERM=truecolor` and remove an inherited `NO_COLOR` flag from development launchers. Programs choose their text colors; plain shell output remains plain. Existing shells keep their environment: run `unset NO_COLOR` (POSIX shells) to enable color for subsequently launched programs. Existing programs may need their own color setting or a normal restart; Opterm does not restart them.
+
+Open **… → Settings…** to adjust app appearance, monospace font, size, padding, line height, and cursor. **Save** applies changes without restarting shells; **Cancel** discards the draft. Invalid TOML edits keep your working settings and good recovery copy. **Restore last valid settings** loads the backup for review; click **Save** to restore it. See [settings locations and recovery behavior](docs/settings-foundation.md).
 
 Live work survives window closure, but split layouts are currently window-local: reopening restores sessions as individual tabs. Saved split/window layouts are a later step.
 

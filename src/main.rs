@@ -2,6 +2,7 @@
 
 mod input;
 mod layout;
+mod settings_ui;
 use layout::{Axis, Layout};
 
 use eframe::egui::{self, Align2, Color32, FontId, Key, Pos2, Rect, Sense, Vec2};
@@ -10,12 +11,14 @@ use opterm::{
         self, Request,
         client::{Client, RemoteSession},
     },
+    settings::{Appearance, Chrome, Cursor, Paths, Store},
     terminal::BACKGROUND,
 };
 use std::{
     collections::{BTreeMap, VecDeque},
     process::{Command, Stdio},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 type PendingInput = Option<(u64, Vec<u8>)>;
@@ -69,12 +72,18 @@ struct App {
     rename: Option<usize>,
     rename_text: String,
     paste_requested: bool,
+    settings: Store,
+    settings_dialog: Option<settings_ui::Dialog>,
+    settings_poll: Instant,
+    font_database: fontdb::Database,
+    font_names: Vec<String>,
+    applied_appearance: Appearance,
 }
 
-fn install_font(ctx: &egui::Context) {
-    let mut database = fontdb::Database::new();
-    database.load_system_fonts();
-    let preferred = if cfg!(target_os = "macos") {
+fn install_font(ctx: &egui::Context, database: &fontdb::Database, family: &str) -> bool {
+    let preferred = if family != "System monospace" {
+        family
+    } else if cfg!(target_os = "macos") {
         "Menlo"
     } else if cfg!(target_os = "windows") {
         "Consolas"
@@ -85,27 +94,53 @@ fn install_font(ctx: &egui::Context) {
         families: &[fontdb::Family::Name(preferred), fontdb::Family::Monospace],
         ..fontdb::Query::default()
     }) {
-        database.with_face_data(id, |bytes, _| {
-            let mut fonts = egui::FontDefinitions::default();
-            fonts.font_data.insert(
-                "system-monospace".into(),
-                egui::FontData::from_owned(bytes.to_vec()).into(),
-            );
-            fonts
-                .families
-                .get_mut(&egui::FontFamily::Monospace)
-                .unwrap()
-                .insert(0, "system-monospace".into());
-            ctx.set_fonts(fonts);
-        });
+        return database
+            .with_face_data(id, |bytes, face_index| {
+                let mut fonts = egui::FontDefinitions::default();
+                fonts.font_data.insert(
+                    "system-monospace".into(),
+                    egui::FontData {
+                        index: face_index,
+                        ..egui::FontData::from_owned(bytes.to_vec())
+                    }
+                    .into(),
+                );
+                fonts
+                    .families
+                    .get_mut(&egui::FontFamily::Monospace)
+                    .unwrap()
+                    .insert(0, "system-monospace".into());
+                ctx.set_fonts(fonts);
+            })
+            .is_some();
     }
+    false
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>, program: Vec<String>, restore: bool) -> Self {
-        install_font(&cc.egui_ctx);
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        program: Vec<String>,
+        restore: bool,
+    ) -> anyhow::Result<Self> {
+        let paths = Paths::discover()?;
+        let settings = Store::load(paths);
+        let mut font_database = fontdb::Database::new();
+        font_database.load_system_fonts();
+        let mut font_names: Vec<String> = font_database
+            .faces()
+            .filter(|face| face.monospaced)
+            .flat_map(|face| face.families.iter().map(|(name, _)| name.clone()))
+            .collect();
+        font_names.sort();
+        font_names.dedup();
+        install_font(
+            &cc.egui_ctx,
+            &font_database,
+            &settings.current.appearance.font_family,
+        );
         let mut style = (*cc.egui_ctx.style()).clone();
-        style.visuals = egui::Visuals::light();
+
         style.spacing.button_padding = Vec2::new(10.0, 3.0);
         style.spacing.item_spacing = Vec2::new(3.0, 0.0);
         style.visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
@@ -124,7 +159,19 @@ impl App {
             rename: None,
             rename_text: String::new(),
             paste_requested: false,
+            applied_appearance: settings.current.appearance.clone(),
+            settings_dialog: None,
+            settings_poll: Instant::now(),
+            settings,
+            font_database,
+            font_names,
         };
+        app.apply_appearance(&cc.egui_ctx);
+        if !matches!(app.settings.observed, opterm::settings::Revision::Missing)
+            && app.settings.notice.is_some()
+        {
+            app.open_settings();
+        }
         let notify = cc.egui_ctx.clone();
         match service::state_dir().and_then(|path| {
             Client::open(&path, &app.program, restore, move || {
@@ -135,7 +182,85 @@ impl App {
             Err(error) => app.error = Some(format!("{error:#}")),
         }
         app.sync_tabs();
-        app
+        Ok(app)
+    }
+
+    fn open_settings(&mut self) {
+        if self.settings_dialog.is_none() {
+            self.settings_dialog = Some(settings_ui::Dialog::new(&self.settings));
+        }
+    }
+    fn apply_appearance(&mut self, ctx: &egui::Context) {
+        let appearance = &self.settings.current.appearance;
+        ctx.set_theme(match appearance.chrome {
+            Chrome::System => egui::ThemePreference::System,
+            Chrome::Dark => egui::ThemePreference::Dark,
+            Chrome::Light => egui::ThemePreference::Light,
+        });
+        if self.applied_appearance.font_family != appearance.font_family {
+            install_font(ctx, &self.font_database, &appearance.font_family);
+        }
+        self.applied_appearance = appearance.clone();
+        ctx.request_repaint();
+    }
+    fn show_settings(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = &mut self.settings_dialog else {
+            return;
+        };
+        let action = dialog.show(ctx, &self.settings, &self.font_names);
+        use settings_ui::Action;
+        match action {
+            Some(Action::Cancel) => self.settings_dialog = None,
+            Some(Action::Save | Action::Replace) => {
+                let previous_revision = self.settings.observed.clone();
+                let result = self.settings.save(
+                    &dialog.draft,
+                    &dialog.baseline,
+                    matches!(action, Some(Action::Replace)),
+                );
+                match result {
+                    Ok(()) => self.settings_dialog = None,
+                    Err(error) => {
+                        dialog.conflict = dialog.baseline != self.settings.disk_revision();
+                        dialog.message = Some(format!("{error:#}"));
+                        // Only advance the baseline after our own config commit
+                        // (e.g. backup replacement failed). A conflict must keep
+                        // requiring explicit replacement, even for an unchanged draft.
+                        if self.settings.observed != previous_revision {
+                            dialog.baseline = self.settings.observed.clone();
+                        }
+                    }
+                }
+                self.apply_appearance(ctx);
+            }
+            Some(Action::Restore) => match self.settings.recovery() {
+                Ok(recovery) => {
+                    dialog.draft = recovery;
+                    dialog.message = Some("Recovery copy loaded into the draft. Save to restore; Cancel leaves the file untouched.".into());
+                }
+                Err(error) => dialog.message = Some(format!("{error:#}")),
+            },
+            Some(Action::Reload) => {
+                self.settings.poll();
+                self.settings_dialog = Some(settings_ui::Dialog::new(&self.settings));
+                self.apply_appearance(ctx);
+            }
+            Some(Action::Edit) => {
+                if !self.settings.paths.config.exists() {
+                    dialog.message = Some("Save first to create the configuration file.".into());
+                } else if let Err(error) = open::that_detached(&self.settings.paths.config) {
+                    dialog.message = Some(format!("Open configuration: {error}"));
+                }
+            }
+            Some(Action::BackupFolder) => {
+                if let Err(error) =
+                    open::that_detached(self.settings.paths.backup.parent().unwrap())
+                {
+                    dialog.message = Some(format!("Open recovery folder: {error}"));
+                }
+            }
+            None => {}
+        }
     }
 
     fn sync_tabs(&mut self) {
@@ -344,7 +469,11 @@ impl App {
             .exact_height(30.0)
             .frame(
                 egui::Frame::new()
-                    .fill(Color32::from_rgb(196, 196, 198))
+                    .fill(if ctx.style().visuals.dark_mode {
+                        Color32::from_rgb(44, 44, 46)
+                    } else {
+                        Color32::from_rgb(196, 196, 198)
+                    })
                     .inner_margin(egui::Margin::symmetric(6, 3)),
             )
             .show(ctx, |ui| {
@@ -369,7 +498,11 @@ impl App {
                         let response = ui.add(
                             egui::Button::new(title)
                                 .fill(if index == self.active {
-                                    Color32::from_rgb(248, 248, 249)
+                                    if ctx.style().visuals.dark_mode {
+                                        Color32::from_rgb(66, 66, 68)
+                                    } else {
+                                        Color32::from_rgb(248, 248, 249)
+                                    }
                                 } else {
                                     Color32::TRANSPARENT
                                 })
@@ -385,6 +518,11 @@ impl App {
                     }
                     if ui.button("+").on_hover_text("New shell tab").clicked() {
                         self.new_tab();
+                    }
+                    if let Some(notice) = &self.settings.notice
+                        && ui.button("Settings notice").on_hover_text(notice).clicked()
+                    {
+                        self.open_settings();
                     }
                     ui.menu_button("Sessions", |ui| {
                         if let Some(client) = &self.client {
@@ -429,6 +567,11 @@ impl App {
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.menu_button("...", |ui| {
+                            if ui.button("Settings…").clicked() {
+                                self.open_settings();
+                                ui.close();
+                            }
+                            ui.separator();
                             if ui.button("New tab").clicked() {
                                 self.new_tab();
                                 ui.close();
@@ -533,7 +676,12 @@ impl App {
                             egui::StrokeKind::Inside,
                         );
                     }
-                    self.paint_pane(ui, ctx, id, rect.shrink(6.0), focused);
+                    let a = &self.settings.current.appearance;
+                    let inset = Vec2::new(
+                        a.padding_x.min((rect.width() - 1.0).max(0.0) / 2.0),
+                        a.padding_y.min((rect.height() - 1.0).max(0.0) / 2.0),
+                    );
+                    self.paint_pane(ui, ctx, id, rect.shrink2(inset), focused);
                 }
             });
         if let Some(client) = &self.client {
@@ -562,9 +710,10 @@ impl App {
         let bg = Color32::from_rgb(BACKGROUND[0], BACKGROUND[1], BACKGROUND[2]);
         let session = &self.panes[&id];
         let response = ui.interact(rect, egui::Id::new(("pane", id)), Sense::click_and_drag());
-        let font = FontId::monospace(14.0);
+        let appearance = &self.settings.current.appearance;
+        let font = FontId::monospace(appearance.font_size);
         let width = ui.fonts_mut(|fonts| fonts.glyph_width(&font, 'M'));
-        let height = 14.0 * 1.2;
+        let height = appearance.font_size * appearance.line_height;
         if let Err(error) = session.resize(
             (rect.width() / width) as u16,
             (rect.height() / height) as u16,
@@ -645,12 +794,30 @@ impl App {
             && !screen.exited
         {
             let pos = rect.min + Vec2::new(col as f32 * width, row as f32 * height);
-            painter.rect_stroke(
-                Rect::from_min_size(pos, Vec2::new(width, height)),
-                0,
-                (1.0, Color32::from_gray(235)),
-                egui::StrokeKind::Inside,
-            );
+            let cursor_rect = Rect::from_min_size(pos, Vec2::new(width, height));
+            match appearance.cursor {
+                Cursor::Outline => {
+                    painter.rect_stroke(
+                        cursor_rect,
+                        0,
+                        (1.0, Color32::from_gray(235)),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                Cursor::Bar => {
+                    painter.rect_filled(
+                        Rect::from_min_size(pos, Vec2::new(2.0, height)),
+                        0,
+                        Color32::from_gray(235),
+                    );
+                }
+                Cursor::Underline => {
+                    painter.line_segment(
+                        [cursor_rect.left_bottom(), cursor_rect.right_bottom()],
+                        (2.0, Color32::from_gray(235)),
+                    );
+                }
+            }
         }
         if screen.exited {
             painter.text(
@@ -742,6 +909,10 @@ impl App {
                 }
                 if input::app_shortcut(*modifiers) {
                     match key {
+                        Key::Comma => {
+                            self.open_settings();
+                            continue;
+                        }
                         Key::N => {
                             self.new_window();
                             continue;
@@ -865,7 +1036,11 @@ impl App {
                 egui::Event::MouseWheel { unit, delta, .. } => {
                     let lines = match unit {
                         egui::MouseWheelUnit::Line => delta.y * 3.0,
-                        egui::MouseWheelUnit::Point => delta.y / (14.0 * 1.2),
+                        egui::MouseWheelUnit::Point => {
+                            delta.y
+                                / (self.settings.current.appearance.font_size
+                                    * self.settings.current.appearance.line_height)
+                        }
                         egui::MouseWheelUnit::Page => delta.y * 30.0,
                     };
                     let hovered = ctx
@@ -893,10 +1068,22 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.settings_poll.elapsed() >= Duration::from_secs(1) {
+            self.settings_poll = Instant::now();
+            let previous = self.settings.observed.clone();
+            if self.settings.poll() {
+                self.apply_appearance(ctx);
+            }
+            if previous != self.settings.observed && self.settings.notice.is_some() {
+                self.open_settings();
+            }
+        }
+        ctx.request_repaint_after(Duration::from_secs(1));
         self.sync_tabs();
         self.tab_bar(ctx);
         self.terminal(ctx);
         self.events(ctx);
+        self.show_settings(ctx);
         if let Some(index) = self.rename {
             egui::Window::new("Rename tab")
                 .collapsible(false)
@@ -996,7 +1183,7 @@ fn main() {
                 .with_min_inner_size([320.0, 160.0]),
             ..Default::default()
         },
-        Box::new(move |cc| Ok(Box::new(App::new(cc, program, restore)))),
+        Box::new(move |cc| Ok(Box::new(App::new(cc, program, restore)?))),
     ) {
         eprintln!("{error}");
         std::process::exit(1);
