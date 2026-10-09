@@ -4,7 +4,7 @@
 
 ## Active terminal-first prototype sequence
 
-The design interview is closed with Q54-Q83 accepted. No further product decision round is required before a prototype. This sequence supersedes the backend-first implementation order retained below as history; the first working-terminal slice is implemented as recorded in [prototype status](prototype-status.md), while the remaining milestones are ahead.
+The design interview is closed with Q54-Q83 accepted. No further product decision round is required before a prototype. This sequence supersedes the backend-first implementation order retained below as history; the working-terminal and live-session continuity slices are implemented as recorded in [prototype status](prototype-status.md), while the remaining terminal controls, saved state, and native validation are ahead.
 
 1. **A working terminal view.** Establish the Rust project and a bounded evaluation of the existing PTY/VT and UI candidates. Render a real shell in the accepted thin layout; verify typing, resize, copy/paste, and a CLI agent. Choose the toolkit using this working slice and native feasibility, without claiming speed superiority.
 2. **Built-in session continuity.** Add the independent session service, detach/reattach, and a compact session picker. Demonstrate that closing or crashing the desktop leaves service-owned work running; never replay commands after reboot or service failure.
@@ -92,7 +92,7 @@ Default output retention is configurable: 30 days, 5 GiB total output history, a
 
 | Target | Initial evaluation requirement | Current evidence |
 | --- | --- | --- |
-| Linux x86-64 | Native runs on X11 and Wayland | Local Linux x86-64 host and Rust tools verified; Opterm and display/input tests not yet run |
+| Linux x86-64 | Native runs on X11 and Wayland | Linux X11 PTY/GUI close/crash continuity checked; Wayland remains unverified |
 | macOS Apple silicon | Native process, rendering, input, and accessibility checks | Unverified |
 | macOS Intel | Native process, rendering, input, and accessibility checks | Unverified |
 | Windows x86-64 | Native process/PTY, rendering, input, and accessibility checks | Unverified |
@@ -113,4 +113,4 @@ Polished installers, public publication, remote SSH/container sessions, provider
 
 ## Planning status
 
-The user accepted Q80-Q83 and requested an end to the extended interview on 2026-10-09. Product planning is sufficient for a prototype; no further design round is queued. The first working-terminal slice now exists. See [prototype status](prototype-status.md) for coverage; the independent service, settings backups, and comparative benchmarks are not implemented yet.
+The user accepted Q80-Q83 and requested an end to the extended interview on 2026-10-09. Product planning is sufficient for a prototype; no further design round is queued. The working-terminal and independent-service slices now exist. See [prototype status](prototype-status.md) for verified continuity and coverage; settings backups, the remaining everyday controls, and comparative benchmarks are still ahead.

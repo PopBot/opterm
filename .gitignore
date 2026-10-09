@@ -22,3 +22,6 @@ target/
 # Local operating-system metadata
 .DS_Store
 Thumbs.db
+
+# Python helper bytecode
+__pycache__/

@@ -3,14 +3,22 @@
 mod input;
 
 use eframe::egui::{self, Align2, Color32, FontId, Key, Pos2, Rect, Sense, Vec2};
-use opterm::terminal::{BACKGROUND, Session};
+use opterm::{
+    service::{
+        self, Request,
+        client::{Client, RemoteSession},
+    },
+    terminal::BACKGROUND,
+};
+use std::sync::Arc;
 
 struct Tab {
-    session: Session,
-    name: Option<String>,
+    session: RemoteSession,
 }
 struct App {
     tabs: Vec<Tab>,
+    client: Option<Arc<Client>>,
+    end_session: Option<u64>,
     active: usize,
     program: Vec<String>,
     error: Option<String>,
@@ -61,6 +69,8 @@ impl App {
         cc.egui_ctx.set_style(style);
         let mut app = Self {
             tabs: Vec::new(),
+            client: None,
+            end_session: None,
             active: 0,
             program,
             error: None,
@@ -68,21 +78,58 @@ impl App {
             rename_text: String::new(),
             paste_requested: false,
         };
-        app.new_tab(&cc.egui_ctx);
+        let notify = cc.egui_ctx.clone();
+        match service::state_dir()
+            .and_then(|path| Client::open(&path, &app.program, move || notify.request_repaint()))
+        {
+            Ok(client) => app.client = Some(client),
+            Err(error) => app.error = Some(format!("{error:#}")),
+        }
+        app.sync_tabs();
         app
     }
 
-    fn new_tab(&mut self, ctx: &egui::Context) {
-        let notify = ctx.clone();
-        match Session::spawn(&self.program, move || notify.request_repaint()) {
-            Ok(session) => {
+    fn sync_tabs(&mut self) {
+        let Some(client) = &self.client else {
+            return;
+        };
+        let views = client.views();
+        let previous = self.tabs.get(self.active).map(|tab| tab.session.id);
+        self.tabs.retain(|tab| views.contains(&tab.session.id));
+        let mut new_active = None;
+        for id in views {
+            if !self.tabs.iter().any(|tab| tab.session.id == id) {
                 self.tabs.push(Tab {
-                    session,
-                    name: None,
+                    session: client.session(id),
                 });
-                self.active = self.tabs.len() - 1;
+                new_active = Some(self.tabs.len() - 1);
             }
-            Err(error) => self.error = Some(format!("{error:#}")),
+        }
+        self.active = new_active
+            .or_else(|| {
+                previous.and_then(|id| self.tabs.iter().position(|tab| tab.session.id == id))
+            })
+            .unwrap_or(0);
+        client.active(self.tabs.get(self.active).map(|tab| tab.session.id));
+        if let Some(error) = client.take_error() {
+            self.error = Some(error);
+        }
+    }
+
+    fn new_tab(&mut self, _ctx: &egui::Context) {
+        if let Some(client) = &self.client
+            && let Err(error) = client.send(Request::Create(Vec::new()))
+        {
+            self.error = Some(format!("{error:#}"));
+        }
+    }
+
+    fn detach(&mut self) {
+        if let Some(tab) = self.tabs.get(self.active)
+            && let Some(client) = &self.client
+            && let Err(error) = client.send(Request::Detach(tab.session.id))
+        {
+            self.error = Some(format!("{error:#}"));
         }
     }
 
@@ -106,14 +153,15 @@ impl App {
                 ui.horizontal(|ui| {
                     for (index, tab) in self.tabs.iter().enumerate() {
                         let automatic_title = tab.session.title();
-                        let title = tab
-                            .name
-                            .as_deref()
-                            .unwrap_or(if automatic_title.is_empty() {
-                                "Shell"
-                            } else {
-                                &automatic_title
-                            });
+                        let manual_name = tab.session.name();
+                        let title =
+                            manual_name
+                                .as_deref()
+                                .unwrap_or(if automatic_title.is_empty() {
+                                    "Shell"
+                                } else {
+                                    &automatic_title
+                                });
                         let title: String =
                             title.chars().filter(|c| !c.is_control()).take(30).collect();
                         let response = ui.add(
@@ -130,12 +178,52 @@ impl App {
                         }
                         if response.double_clicked() {
                             self.rename = Some(index);
-                            self.rename_text = tab.name.clone().unwrap_or_default();
+                            self.rename_text = tab.session.name().unwrap_or_default();
                         }
                     }
                     if ui.button("+").on_hover_text("New shell tab").clicked() {
                         self.new_tab(ctx);
                     }
+                    ui.menu_button("Sessions", |ui| {
+                        if let Some(client) = &self.client {
+                            for info in client.infos() {
+                                let name =
+                                    info.name.as_deref().unwrap_or(if info.title.is_empty() {
+                                        "Shell"
+                                    } else {
+                                        &info.title
+                                    });
+                                let state = if info.exited {
+                                    "ended"
+                                } else if info.attached {
+                                    "live"
+                                } else {
+                                    "detached"
+                                };
+                                if ui
+                                    .button(format!(
+                                        "{} · {} · {}",
+                                        info.id,
+                                        name.chars().take(30).collect::<String>(),
+                                        state
+                                    ))
+                                    .clicked()
+                                {
+                                    if self.tabs.iter().any(|tab| tab.session.id == info.id) {
+                                        self.active = self
+                                            .tabs
+                                            .iter()
+                                            .position(|t| t.session.id == info.id)
+                                            .unwrap();
+                                    } else if let Err(error) = client.send(Request::Attach(info.id))
+                                    {
+                                        self.error = Some(format!("{error:#}"));
+                                    }
+                                    ui.close();
+                                }
+                            }
+                        }
+                    });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.menu_button("...", |ui| {
                             if ui.button("New tab").clicked() {
@@ -147,9 +235,32 @@ impl App {
                                 self.rename_text = self
                                     .tabs
                                     .get(self.active)
-                                    .and_then(|t| t.name.clone())
+                                    .and_then(|t| t.session.name())
                                     .unwrap_or_default();
                                 ui.close();
+                            }
+                            if ui.button("Detach tab").clicked() {
+                                self.detach();
+                                ui.close();
+                            }
+                            if let Some(tab) = self.tabs.get(self.active) {
+                                let id = tab.session.id;
+                                let controlled = tab.session.controlled();
+                                if !controlled && ui.button("Take control").clicked() {
+                                    if let Some(client) = &self.client
+                                        && let Err(error) = client.send(Request::TakeControl(id))
+                                    {
+                                        self.error = Some(format!("{error:#}"));
+                                    }
+                                    ui.close();
+                                }
+                                if ui
+                                    .add_enabled(controlled, egui::Button::new("End session…"))
+                                    .clicked()
+                                {
+                                    self.end_session = Some(id);
+                                    ui.close();
+                                }
                             }
                             if ui.button("Copy selection").clicked() {
                                 self.copy(ctx);
@@ -177,7 +288,7 @@ impl App {
                     ui.painter().text(
                         rect.min,
                         Align2::LEFT_TOP,
-                        "Shell could not start. Use + to retry.",
+                        "No attached sessions. Use + or the Sessions menu.",
                         FontId::monospace(14.0),
                         Color32::LIGHT_GRAY,
                     );
@@ -205,26 +316,38 @@ impl App {
                     && let Some(pos) = ctx.input(|i| i.pointer.press_origin())
                 {
                     let (row, col) = point(pos);
-                    session.select(row, col, true);
+                    if session.controlled()
+                        && let Err(error) = session.select(row, col, true)
+                    {
+                        self.error = Some(format!("{error:#}"));
+                    }
                 }
                 if response.dragged()
                     && let Some(pos) = response.interact_pointer_pos()
                 {
                     let (row, col) = point(pos);
-                    session.select(row, col, false);
+                    if session.controlled()
+                        && let Err(error) = session.select(row, col, false)
+                    {
+                        self.error = Some(format!("{error:#}"));
+                    }
                 }
                 if response.clicked()
                     && let Some(pos) = response.interact_pointer_pos()
                 {
                     let (row, col) = point(pos);
-                    session.select(row, col, true);
+                    if session.controlled()
+                        && let Err(error) = session.select(row, col, true)
+                    {
+                        self.error = Some(format!("{error:#}"));
+                    }
                 }
                 let screen = session.screen();
-                if let Some(error) = screen.error {
-                    self.error = Some(error);
+                if let Some(error) = &screen.error {
+                    self.error = Some(error.clone());
                 }
                 let painter = ui.painter().with_clip_rect(rect);
-                for cell in screen.cells {
+                for cell in &screen.cells {
                     let position =
                         rect.min + Vec2::new(cell.col as f32 * width, cell.row as f32 * height);
                     let cell_rect = Rect::from_min_size(
@@ -241,7 +364,7 @@ impl App {
                     }
                     let fg = Color32::from_rgb(cell.fg[0], cell.fg[1], cell.fg[2]);
                     if cell.text != " " {
-                        painter.text(position, Align2::LEFT_TOP, cell.text, font.clone(), fg);
+                        painter.text(position, Align2::LEFT_TOP, &cell.text, font.clone(), fg);
                     }
                     if cell.underline {
                         painter.line_segment(
@@ -272,21 +395,33 @@ impl App {
                     );
                 }
                 // A native title bar, one small tab row, and an uninterrupted terminal.
-                let title =
-                    self.tabs[self.active]
-                        .name
-                        .as_deref()
-                        .unwrap_or(if screen.title.is_empty() {
-                            "Shell"
-                        } else {
-                            &screen.title
-                        });
+                let manual_name = self.tabs[self.active].session.name();
+                let title = manual_name
+                    .as_deref()
+                    .unwrap_or(if screen.title.is_empty() {
+                        "Shell"
+                    } else {
+                        &screen.title
+                    });
+                if !session.controlled() && !screen.exited {
+                    painter.text(
+                        rect.right_bottom(),
+                        Align2::RIGHT_BOTTOM,
+                        "Read-only · Take control in menu",
+                        FontId::monospace(12.0),
+                        Color32::GRAY,
+                    );
+                }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("Opterm — {title}")));
             });
     }
 
     fn events(&mut self, ctx: &egui::Context) {
-        if self.rename.is_some() || egui::Popup::is_any_open(ctx) {
+        if self.rename.is_some()
+            || self.end_session.is_some()
+            || self.error.is_some()
+            || egui::Popup::is_any_open(ctx)
+        {
             return;
         }
         let events = ctx.input(|i| i.events.clone());
@@ -301,6 +436,17 @@ impl App {
                 && input::app_shortcut(*modifiers)
             {
                 self.new_tab(ctx);
+                continue;
+            }
+            if let egui::Event::Key {
+                key: Key::W,
+                pressed: true,
+                modifiers,
+                ..
+            } = &event
+                && input::app_shortcut(*modifiers)
+            {
+                self.detach();
                 continue;
             }
             let Some(tab) = self.tabs.get(self.active) else {
@@ -368,8 +514,11 @@ impl App {
                         egui::MouseWheelUnit::Point => delta.y / (14.0 * 1.2),
                         egui::MouseWheelUnit::Page => delta.y * 30.0,
                     };
-                    tab.session.scroll(lines.round() as i32);
-                    Ok(())
+                    if tab.session.controlled() {
+                        tab.session.scroll(lines.round() as i32)
+                    } else {
+                        Ok(())
+                    }
                 }
                 _ => Ok(()),
             };
@@ -382,6 +531,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.sync_tabs();
         self.tab_bar(ctx);
         self.terminal(ctx);
         self.events(ctx);
@@ -396,14 +546,38 @@ impl eframe::App for App {
                     );
                     ui.horizontal(|ui| {
                         if ui.button("Save").clicked() {
-                            if let Some(tab) = self.tabs.get_mut(index) {
-                                tab.name = (!self.rename_text.trim().is_empty())
+                            if let Some(tab) = self.tabs.get(index) {
+                                let name = (!self.rename_text.trim().is_empty())
                                     .then(|| self.rename_text.trim().to_owned());
+                                if let Err(error) = tab.session.rename(name) {
+                                    self.error = Some(format!("{error:#}"));
+                                }
                             }
                             self.rename = None;
                         }
                         if ui.button("Cancel").clicked() {
                             self.rename = None;
+                        }
+                    });
+                });
+        }
+        if let Some(id) = self.end_session {
+            egui::Window::new("End session?")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label("This stops the shell or agent. Closing a tab only detaches it.");
+                    ui.horizontal(|ui| {
+                        if ui.button("End session").clicked() {
+                            if let Some(client) = &self.client
+                                && let Err(error) = client.send(Request::End(id))
+                            {
+                                self.error = Some(format!("{error:#}"));
+                            }
+                            self.end_session = None;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.end_session = None;
                         }
                     });
                 });
@@ -421,12 +595,30 @@ impl eframe::App for App {
     }
 }
 
-fn main() -> eframe::Result {
+fn main() {
     let mut program: Vec<String> = std::env::args().skip(1).collect();
+    if program.first().is_some_and(|s| s == "--session-service") {
+        if let Err(error) = service::state_dir().and_then(|path| service::serve(&path)) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if program.first().is_some_and(|s| s == "--stop-service") {
+        let result = service::state_dir()
+            .and_then(|path| service::Connection::connect(&path))
+            .and_then(|mut connection| connection.call(Request::Shutdown));
+        if let Err(error) = result {
+            eprintln!("Could not stop session service: {error:#}");
+            std::process::exit(1);
+        }
+        println!("Session service stopped; its sessions were ended.");
+        return;
+    }
     if program.first().is_some_and(|s| s == "--") {
         program.remove(0);
     }
-    eframe::run_native(
+    if let Err(error) = eframe::run_native(
         "Opterm",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
@@ -436,5 +628,8 @@ fn main() -> eframe::Result {
             ..Default::default()
         },
         Box::new(move |cc| Ok(Box::new(App::new(cc, program)))),
-    )
+    ) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
 }

@@ -4,19 +4,36 @@ A lightweight cross-platform terminal for macOS, Linux, and Windows, with built-
 
 ## Current status
 
-The first Rust terminal slice runs a real local shell in the approved thin layout, with tabs, terminal parsing, resize, selection, copy/paste, and scrollback. The design interview is closed. See [prototype status and limitations](docs/prototype-status.md).
+The Rust prototype runs a real local shell in the approved thin layout, with tabs, resize, selection, copy/paste, and scrollback. A small background service now keeps shells and terminal programs alive when you close or crash the desktop. Reopening Opterm reconnects to those live sessions. No database is involved. See [prototype status and limitations](docs/prototype-status.md).
 
-This is an internal development slice: closing the app currently ends its shells. The independent session service, remaining first-version features, native macOS/Windows validation, and benchmarks are still ahead.
-
-## Run
+## Run locally
 
 ```sh
+cd /home/jarod/Dev/extdev/projects/optimized-terminal
 cargo run --release
-# Launch a CLI agent instead of the default shell:
-cargo run --release -- -- codex
 ```
 
-Use an installed Rust toolchain and a native desktop session. The first build downloads dependencies. Linux X11 has a focused GUI check; other native platforms remain unverified.
+After the first build, launch directly:
+
+```sh
+./target/release/opterm
+```
+
+Close the window and run the same command again to return to your shells. Start an installed agent from a shell as usual (`codex` or `claude`), or create a new agent session directly:
+
+```sh
+./target/release/opterm -- codex
+```
+
+An explicit program creates a new session; reopening with no program restores existing sessions. The **Sessions** menu reattaches detached tabs. Cmd+W (macOS) or Ctrl+Shift+W (Linux/Windows) detaches a tab. **End session…** in the menu stops its work after confirmation. Launching another instance opens another window; existing controlled sessions are read-only there until you choose **Take control**.
+
+The service stays running when all windows close. To deliberately stop it and end **all** its sessions:
+
+```sh
+./target/release/opterm --stop-service
+```
+
+Use an installed Rust toolchain and a native desktop session. The first build downloads dependencies. Linux X11 is tested; macOS, Windows, and Wayland runtime behavior remains unverified. Reboot, logout, or service failure can end work; this prototype does not replay old commands or restore lost processes.
 
 ## Project documents
 

@@ -4,6 +4,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
+        mpsc::{SyncSender, sync_channel},
     },
     thread,
 };
@@ -81,7 +82,7 @@ struct Status {
     exited: bool,
     error: Option<String>,
 }
-type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
+type Writer = SyncSender<Vec<u8>>;
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Clone)]
@@ -119,14 +120,14 @@ impl EventListener for Listener {
             _ => None,
         };
         if let Some(reply) = reply
-            && let Err(error) = self.writer.lock().unwrap().write_all(reply.as_bytes())
+            && let Err(error) = self.writer.try_send(reply.into_bytes())
         {
             self.status.lock().unwrap().error = Some(format!("Terminal reply failed: {error}"));
         }
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Cell {
     pub row: usize,
     pub col: usize,
@@ -137,24 +138,43 @@ pub struct Cell {
     pub underline: bool,
     pub selected: bool,
 }
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Screen {
     pub cells: Vec<Cell>,
     pub cursor: Option<(usize, usize)>,
+    #[serde(with = "mode_bits")]
     pub mode: TermMode,
     pub title: String,
     pub exited: bool,
     pub error: Option<String>,
 }
 impl Screen {
+    pub fn empty() -> Self {
+        Self {
+            cells: Vec::new(),
+            cursor: None,
+            mode: TermMode::empty(),
+            title: String::new(),
+            exited: false,
+            error: None,
+        }
+    }
     pub fn text(&self) -> String {
         let mut result = String::new();
         let mut row = 0;
+        let mut column = 0;
         for cell in &self.cells {
             while row < cell.row {
                 result.push('\n');
                 row += 1;
+                column = 0;
+            }
+            while column < cell.col {
+                result.push(' ');
+                column += 1;
             }
             result.push_str(&cell.text);
+            column = cell.col + if cell.wide { 2 } else { 1 };
         }
         result
     }
@@ -198,7 +218,8 @@ impl Session {
         let killer = child.clone_killer();
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader()?;
-        let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
+        let mut pty_writer = pair.master.take_writer()?;
+        let (writer, input) = sync_channel::<Vec<u8>>(64);
         let size = Arc::new(Mutex::new(size));
         let status = Arc::new(Mutex::new(Status::default()));
         let listener = Listener {
@@ -220,6 +241,22 @@ impl Session {
         )));
         let generation = Arc::new(AtomicU64::new(0));
         let wake: Wake = Arc::new(wake);
+        let write_status = status.clone();
+        let write_changed = generation.clone();
+        let notify = wake.clone();
+        thread::Builder::new()
+            .name("opterm-pty-write".into())
+            .spawn(move || {
+                for bytes in input {
+                    if let Err(error) = pty_writer.write_all(&bytes) {
+                        write_status.lock().unwrap().error =
+                            Some(format!("PTY write failed: {error}"));
+                        write_changed.fetch_add(1, Ordering::Relaxed);
+                        notify();
+                        break;
+                    }
+                }
+            })?;
         let term = terminal.clone();
         let read_status = status.clone();
         let changed = generation.clone();
@@ -243,6 +280,7 @@ impl Session {
                         Err(error) => {
                             read_status.lock().unwrap().error =
                                 Some(format!("PTY read failed: {error}"));
+                            changed.fetch_add(1, Ordering::Relaxed);
                             notify();
                             break;
                         }
@@ -250,6 +288,7 @@ impl Session {
                 }
             })?;
         let wait_status = status.clone();
+        let changed = generation.clone();
         let notify = wake.clone();
         thread::Builder::new()
             .name("opterm-child-wait".into())
@@ -261,6 +300,7 @@ impl Session {
                     status.error = Some(format!("Wait failed: {error}"));
                 }
                 drop(status);
+                changed.fetch_add(1, Ordering::Relaxed);
                 notify();
             })?;
         Ok(Self {
@@ -276,12 +316,15 @@ impl Session {
     }
 
     pub fn write(&self, bytes: &[u8]) -> Result<()> {
+        anyhow::ensure!(
+            bytes.len() <= 1024 * 1024,
+            "Input exceeds the 1 MiB prototype limit"
+        );
         self.terminal.lock().unwrap().scroll_display(Scroll::Bottom);
+        self.generation.fetch_add(1, Ordering::Relaxed);
         self.writer
-            .lock()
-            .unwrap()
-            .write_all(bytes)
-            .context("Write terminal input")
+            .try_send(bytes.to_vec())
+            .context("Queue terminal input")
     }
 
     pub fn paste(&self, text: &str) -> Result<()> {
@@ -317,6 +360,7 @@ impl Session {
         self.master.resize(new).context("Resize native PTY")?;
         self.terminal.lock().unwrap().resize(Size { cols, rows });
         *self.size.lock().unwrap() = new;
+        self.generation.fetch_add(1, Ordering::Relaxed);
         (self.wake)();
         Ok(())
     }
@@ -326,6 +370,7 @@ impl Session {
             .lock()
             .unwrap()
             .scroll_display(Scroll::Delta(lines));
+        self.generation.fetch_add(1, Ordering::Relaxed);
         (self.wake)();
     }
 
@@ -343,6 +388,7 @@ impl Session {
         } else if let Some(selection) = &mut term.selection {
             selection.update(point, Side::Right);
         }
+        self.generation.fetch_add(1, Ordering::Relaxed);
         (self.wake)();
     }
 
@@ -356,6 +402,10 @@ impl Session {
 
     pub fn mode(&self) -> TermMode {
         *self.terminal.lock().unwrap().mode()
+    }
+
+    pub fn exited(&self) -> bool {
+        self.status.lock().unwrap().exited
     }
 
     pub fn screen(&self) -> Screen {
@@ -441,8 +491,19 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // First development slice only. Move ownership into the independent
-        // service before promising detach/reattach or desktop-crash survival.
+        // Only the background service owns these sessions in the desktop path.
+        // Dropping an explicit service-owned session ends its child.
         let _ = self.killer.kill();
+    }
+}
+
+mod mode_bits {
+    use alacritty_terminal::term::TermMode;
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(mode: &TermMode, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u32(mode.bits())
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<TermMode, D::Error> {
+        Ok(TermMode::from_bits_retain(u32::deserialize(deserializer)?))
     }
 }

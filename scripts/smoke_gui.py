@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Focused Linux X11 check: real keys, tabs, interrupt, resize, and screenshot.
+"""Focused Linux X11 check: input, clipboard, and real close/crash continuity.
 
 Uses a private Xvfb display. Requires Xvfb, xwd, libX11 and libXtst.
 Does not touch the user's desktop or require Python packages.
@@ -11,6 +11,7 @@ import struct
 import subprocess
 import sys
 import time
+import tempfile
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +37,17 @@ X.XSync.argtypes = [D, C.c_int]
 X.XResizeWindow.argtypes = [D, W, C.c_uint, C.c_uint]
 X.XFlush.argtypes = [D]
 X.XCloseDisplay.argtypes = [D]
+X.XInternAtom.argtypes = [D, C.c_char_p, C.c_int]
+X.XInternAtom.restype = W
+class MessageData(C.Union):
+    _fields_ = [('longs', C.c_long * 5), ('bytes', C.c_char * 20)]
+class ClientMessage(C.Structure):
+    _fields_ = [('type', C.c_int), ('serial', W), ('send_event', C.c_int),
+                ('display', D), ('window', W), ('message_type', W),
+                ('format', C.c_int), ('data', MessageData)]
+class XEvent(C.Union):
+    _fields_ = [('message', ClientMessage), ('padding', C.c_long * 24)]
+X.XSendEvent.argtypes = [D, W, C.c_int, C.c_long, C.POINTER(XEvent)]
 XT.XTestFakeKeyEvent.argtypes = [D, C.c_uint, C.c_int, W]
 XT.XTestFakeMotionEvent.argtypes = [D, C.c_int, C.c_int, C.c_int, W]
 XT.XTestFakeButtonEvent.argtypes = [D, C.c_uint, C.c_int, W]
@@ -80,12 +92,14 @@ def main():
     marker = TARGET / 'gui-input.txt'
     marker.unlink(missing_ok=True)
     server = subprocess.Popen(['Xvfb', '-displayfd', '1', '-screen', '0', '1100x760x24', '-nolisten', 'tcp'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    state = tempfile.TemporaryDirectory(prefix='opterm-gui-')
     app = None
     dpy = None
+    env = None
+    binary = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else TARGET / 'debug/opterm'
     try:
         display = ':' + server.stdout.readline().decode().strip()
-        env = {**os.environ, 'DISPLAY': display, 'LIBGL_ALWAYS_SOFTWARE': '1', 'WINIT_UNIX_BACKEND': 'x11'}
-        binary = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else TARGET / 'debug/opterm'
+        env = {**os.environ, 'DISPLAY': display, 'LIBGL_ALWAYS_SOFTWARE': '1', 'WINIT_UNIX_BACKEND': 'x11', 'OPTERM_STATE_DIR': state.name}
         app = subprocess.Popen([str(binary), '--', '/bin/sh'], cwd=ROOT, env=env)
         dpy = wait_until(lambda: X.XOpenDisplay(display.encode()))
         root = X.XDefaultRootWindow(dpy)
@@ -172,6 +186,49 @@ def main():
             screenshot(display)
             raise
         print('Native selection, copy, and paste: passed')
+        # Keep a shell variable/PID and background work across actual window exit.
+        pid_marker = Path(state.name) / 'pid'
+        work_marker = Path(state.name) / 'background'
+        restored_marker = Path(state.name) / 'restored'
+        type_text("export OPTERM_GUI=still-here; printf '%s' $$ > '" + str(pid_marker) + "'; (sleep 0.5; printf ALIVE > '" + str(work_marker) + "') &\n")
+        wait_until(pid_marker.exists)
+        original_pid = pid_marker.read_text()
+        event = XEvent()
+        event.message.type = 33  # ClientMessage, normal WM_DELETE_WINDOW request.
+        event.message.display = dpy
+        event.message.window = window
+        event.message.message_type = X.XInternAtom(dpy, b'WM_PROTOCOLS', 0)
+        event.message.format = 32
+        event.message.data.longs[0] = X.XInternAtom(dpy, b'WM_DELETE_WINDOW', 0)
+        X.XSendEvent(dpy, window, 0, 0, C.byref(event))
+        X.XFlush(dpy)
+        assert app.wait(timeout=5) == 0, 'Normal close failed'
+        wait_until(lambda: work_marker.exists() and work_marker.read_text() == 'ALIVE')
+        def reopen():
+            process = subprocess.Popen([str(binary)], cwd=ROOT, env=env)
+            new_window = wait_until(find_window)
+            X.XMapWindow(dpy, new_window)
+            X.XSync(dpy, 0)
+            time.sleep(0.3)
+            X.XSetInputFocus(dpy, new_window, 1, 0)
+            X.XFlush(dpy)
+            time.sleep(0.5)
+            return process, new_window
+        app, window = reopen()
+        type_text("printf '%s:%s' $$ \"$OPTERM_GUI\" > '" + str(restored_marker) + "'\n")
+        wait_until(lambda: restored_marker.exists() and restored_marker.read_text() == original_pid + ':still-here')
+        print('Normal window close/reopen: same shell PID, variables, and background work passed')
+        work_marker.unlink()
+        ready = Path(state.name) / 'ready'
+        type_text("(sleep 0.5; printf ALIVE > '" + str(work_marker) + "') & printf READY > '" + str(ready) + "'\n")
+        wait_until(ready.exists)
+        app.kill(); app.wait(timeout=5)
+        wait_until(lambda: work_marker.exists() and work_marker.read_text() == 'ALIVE')
+        restored_marker.unlink()
+        app, window = reopen()
+        type_text("printf '%s:%s' $$ \"$OPTERM_GUI\" > '" + str(restored_marker) + "'\n")
+        wait_until(lambda: restored_marker.exists() and restored_marker.read_text() == original_pid + ':still-here')
+        print('Desktop SIGKILL/reopen: same shell PID, variables, and background work passed')
     finally:
         if app:
             app.terminate()
@@ -179,6 +236,9 @@ def main():
                 app.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 app.kill(); app.wait()
+        if env:
+            subprocess.run([str(binary), '--stop-service'], cwd=ROOT, env=env, timeout=5, check=True, stdout=subprocess.DEVNULL)
+        state.cleanup()
         if dpy:
             X.XCloseDisplay(dpy)
         server.terminate(); server.wait(timeout=3)
