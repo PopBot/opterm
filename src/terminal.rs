@@ -211,6 +211,9 @@ impl Session {
         }
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
+        // Tool launchers commonly suppress color for captured output. A real
+        // interactive PTY should advertise its own color capability instead.
+        command.env_remove("NO_COLOR");
         let mut child = pair
             .slave
             .spawn_command(command)

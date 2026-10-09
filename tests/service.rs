@@ -30,6 +30,7 @@ impl Service {
         Command::new(env!("CARGO_BIN_EXE_opterm"))
             .arg("--session-service")
             .env("OPTERM_STATE_DIR", path)
+            .env("NO_COLOR", "1") // Simulate a development/tool launcher.
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .spawn()
@@ -299,4 +300,40 @@ fn foreground_agent_fixture_keeps_alternate_screen_and_process_state() {
     assert_eq!(std::fs::read_to_string(pid_file).unwrap(), pid);
     write(&mut reopened, id, "second\n");
     wait_screen(&mut reopened, id, "STEP:2:second");
+}
+
+#[test]
+fn interactive_sessions_enable_color_and_keep_palette_and_truecolor() {
+    let service = Service::start();
+    let mut connection = service.connect();
+    let id = shell(&mut connection);
+    write(
+        &mut connection,
+        id,
+        "printf 'COLOR_ENV:%s:%s:%s\\n' \"$TERM\" \"$COLORTERM\" \"${NO_COLOR-unset}\"; printf '\\033[31mRED\\033[91mBRIGHT\\033[38;5;208mINDEXED\\033[38;2;12;170;240mRGB\\033[0m\\n'\n",
+    );
+    let current = wait_screen(&mut connection, id, "RGB");
+    assert!(
+        current
+            .screen
+            .text()
+            .contains("COLOR_ENV:xterm-256color:truecolor:unset")
+    );
+    for (word, expected) in [
+        ("RED", opterm::terminal::palette(1)),
+        ("BRIGHT", opterm::terminal::palette(9)),
+        ("INDEXED", opterm::terminal::palette(208)),
+        ("RGB", [12, 170, 240]),
+    ] {
+        let cells = current
+            .screen
+            .cells
+            .windows(word.len())
+            .find(|cells| cells.iter().map(|c| c.text.as_str()).collect::<String>() == word)
+            .unwrap();
+        assert!(
+            cells.iter().all(|cell| cell.fg == expected),
+            "{word} lost its color through IPC"
+        );
+    }
 }

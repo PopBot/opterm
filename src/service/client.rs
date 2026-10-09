@@ -4,7 +4,7 @@ use crate::terminal::Screen;
 use alacritty_terminal::term::TermMode;
 use anyhow::{Result, bail, ensure};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::Path,
     sync::{
         Arc, Mutex,
@@ -25,7 +25,8 @@ struct State {
     infos: BTreeMap<u64, Info>,
     views: BTreeSet<u64>,
     screens: BTreeMap<u64, Cached>,
-    active: Option<u64>,
+    visible: Vec<u64>,
+    created: VecDeque<Option<u64>>,
     error: Option<String>,
     disconnected: bool,
 }
@@ -58,6 +59,7 @@ impl Client {
     pub fn open(
         path: &Path,
         program: &[String],
+        restore: bool,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Arc<Self>> {
         let mut connection = Connection::connect_or_start(path)?;
@@ -65,7 +67,7 @@ impl Client {
         let Reply::List(infos) = connection.call(Request::List)? else {
             bail!("Invalid session list reply");
         };
-        for info in infos {
+        for info in infos.into_iter().filter(|_| restore) {
             let Reply::Snapshot(snapshot) = connection.call(Request::Attach(info.id))? else {
                 bail!("Invalid attach reply");
             };
@@ -80,7 +82,7 @@ impl Client {
             state.views.insert(snapshot.info.id);
             state.snapshot(*snapshot);
         }
-        state.active = state.views.last().copied();
+        state.visible = state.views.iter().copied().collect();
         let state = Arc::new(Mutex::new(state));
         let queued = Arc::new(AtomicUsize::new(0));
         let (sender, receiver) = mpsc::sync_channel::<(Request, usize)>(1024);
@@ -103,7 +105,10 @@ impl Client {
                             match reply {
                                 Ok(reply) => update(&mut state.lock().unwrap(), &request, reply),
                                 Err(error) => {
-                                    state.lock().unwrap().error = Some(format!("{error:#}"));
+                                    { let mut state = state.lock().unwrap();
+                                    state.error = Some(format!("{error:#}"));
+                                    if matches!(request, Request::Create(_)) { state.created.push_back(None); }
+                                    }
                                     // List checks whether the connection remains alive.
                                     let Reply::List(infos) = connection.call(Request::List)? else { bail!("Invalid session list"); };
                                     state.lock().unwrap().list(infos);
@@ -114,22 +119,24 @@ impl Client {
                         Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                     }
-                    let active = {
-                        let state = state.lock().unwrap();
-                        state.active.filter(|id| state.views.contains(id)).map(|id| (id, state.screens.get(&id).map(|c| c.revision)))
-                    };
-                    if let Some((id, since)) = active && last_view.elapsed() >= Duration::from_millis(16) {
-                        match connection.call(Request::View { id, since }) {
-                            Ok(Reply::Snapshot(snapshot)) => { state.lock().unwrap().snapshot(*snapshot); wake(); }
-                            Ok(Reply::Unchanged) => {}
-                            Ok(_) => bail!("Invalid screen reply"),
-                            Err(error) => {
-                                // Another controller may have ended the viewed session.
-                                let Reply::List(infos) = connection.call(Request::List)? else { bail!("Invalid session list"); };
-                                let mut state = state.lock().unwrap();
-                                state.list(infos);
-                                if state.views.contains(&id) { state.error = Some(format!("{error:#}")); }
-                                wake();
+                    if last_view.elapsed() >= Duration::from_millis(16) {
+                        let visible = {
+                            let state = state.lock().unwrap();
+                            state.visible.iter().filter(|id| state.views.contains(id))
+                                .map(|id| (*id, state.screens.get(id).map(|c| c.revision))).collect::<Vec<_>>()
+                        };
+                        for (id, since) in visible {
+                            match connection.call(Request::View { id, since }) {
+                                Ok(Reply::Snapshot(snapshot)) => { state.lock().unwrap().snapshot(*snapshot); wake(); }
+                                Ok(Reply::Unchanged) => {}
+                                Ok(_) => bail!("Invalid screen reply"),
+                                Err(error) => {
+                                    let Reply::List(infos) = connection.call(Request::List)? else { bail!("Invalid session list"); };
+                                    let mut state = state.lock().unwrap();
+                                    state.list(infos);
+                                    if state.views.contains(&id) { state.error = Some(format!("{error:#}")); }
+                                    wake();
+                                }
                             }
                         }
                         last_view = Instant::now();
@@ -178,14 +185,18 @@ impl Client {
         }
         Ok(())
     }
-    pub fn views(&self) -> Vec<u64> {
-        self.state.lock().unwrap().views.iter().copied().collect()
+    pub fn view_updates(&self) -> (Vec<u64>, Vec<Option<u64>>) {
+        let mut state = self.state.lock().unwrap();
+        (
+            state.views.iter().copied().collect(),
+            state.created.drain(..).collect(),
+        )
     }
     pub fn infos(&self) -> Vec<Info> {
         self.state.lock().unwrap().infos.values().cloned().collect()
     }
-    pub fn active(&self, id: Option<u64>) {
-        self.state.lock().unwrap().active = id;
+    pub fn visible(&self, ids: Vec<u64>) {
+        self.state.lock().unwrap().visible = ids;
     }
     pub fn take_error(&self) -> Option<String> {
         self.state.lock().unwrap().error.take()
@@ -205,15 +216,14 @@ fn update(state: &mut State, request: &Request, reply: Reply) {
         state.snapshot(*snapshot);
         if matches!(request, Request::Create(_) | Request::Attach(_)) {
             state.views.insert(id);
-            state.active = Some(id);
+            if matches!(request, Request::Create(_)) {
+                state.created.push_back(Some(id));
+            }
         }
     }
     match request {
         Request::Detach(id) | Request::End(id) => {
             state.views.remove(id);
-            if state.active == Some(*id) {
-                state.active = state.views.last().copied();
-            }
             if matches!(request, Request::End(_)) {
                 state.infos.remove(id);
                 state.screens.remove(id);

@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod input;
+mod layout;
+use layout::{Axis, Layout};
 
 use eframe::egui::{self, Align2, Color32, FontId, Key, Pos2, Rect, Sense, Vec2};
 use opterm::{
@@ -10,14 +12,56 @@ use opterm::{
     },
     terminal::BACKGROUND,
 };
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    process::{Command, Stdio},
+    sync::Arc,
+};
+
+type PendingInput = Option<(u64, Vec<u8>)>;
+fn flush_input(pending: &mut PendingInput, client: &Client) -> anyhow::Result<()> {
+    if let Some((id, bytes)) = pending.take() {
+        client.send(Request::Write { id, bytes })?;
+    }
+    Ok(())
+}
+fn queue_input(
+    pending: &mut PendingInput,
+    client: &Client,
+    id: u64,
+    bytes: &[u8],
+) -> anyhow::Result<()> {
+    if let Some((previous, buffer)) = pending
+        && *previous == id
+        && buffer.len() + bytes.len() <= 65_536
+    {
+        buffer.extend_from_slice(bytes);
+        return Ok(());
+    }
+    flush_input(pending, client)?;
+    *pending = Some((id, bytes.to_vec()));
+    Ok(())
+}
 
 struct Tab {
-    session: RemoteSession,
+    key: u64,
+    layout: Layout,
+    focused: u64,
+    name: Option<String>,
+    maximized: bool,
 }
+#[derive(Clone, Copy)]
+enum Placement {
+    Tab,
+    Split { tab: u64, pane: u64, axis: Axis },
+}
+
 struct App {
     tabs: Vec<Tab>,
     client: Option<Arc<Client>>,
+    panes: BTreeMap<u64, RemoteSession>,
+    pending: VecDeque<Placement>,
+    pane_rects: Vec<(u64, Rect)>,
     end_session: Option<u64>,
     active: usize,
     program: Vec<String>,
@@ -58,7 +102,7 @@ fn install_font(ctx: &egui::Context) {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>, program: Vec<String>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, program: Vec<String>, restore: bool) -> Self {
         install_font(&cc.egui_ctx);
         let mut style = (*cc.egui_ctx.style()).clone();
         style.visuals = egui::Visuals::light();
@@ -70,6 +114,9 @@ impl App {
         let mut app = Self {
             tabs: Vec::new(),
             client: None,
+            panes: BTreeMap::new(),
+            pending: VecDeque::new(),
+            pane_rects: Vec::new(),
             end_session: None,
             active: 0,
             program,
@@ -79,9 +126,11 @@ impl App {
             paste_requested: false,
         };
         let notify = cc.egui_ctx.clone();
-        match service::state_dir()
-            .and_then(|path| Client::open(&path, &app.program, move || notify.request_repaint()))
-        {
+        match service::state_dir().and_then(|path| {
+            Client::open(&path, &app.program, restore, move || {
+                notify.request_repaint()
+            })
+        }) {
             Ok(client) => app.client = Some(client),
             Err(error) => app.error = Some(format!("{error:#}")),
         }
@@ -93,49 +142,198 @@ impl App {
         let Some(client) = &self.client else {
             return;
         };
-        let views = client.views();
-        let previous = self.tabs.get(self.active).map(|tab| tab.session.id);
-        self.tabs.retain(|tab| views.contains(&tab.session.id));
-        let mut new_active = None;
-        for id in views {
-            if !self.tabs.iter().any(|tab| tab.session.id == id) {
-                self.tabs.push(Tab {
-                    session: client.session(id),
-                });
-                new_active = Some(self.tabs.len() - 1);
+        let (views, created) = client.view_updates();
+        self.panes.retain(|id, _| views.contains(id));
+        for &id in &views {
+            self.panes.entry(id).or_insert_with(|| client.session(id));
+        }
+        let previous = self.tabs.get(self.active).map(|tab| tab.key);
+        self.tabs = self
+            .tabs
+            .drain(..)
+            .filter_map(|mut tab| {
+                if tab.layout.ids().iter().any(|id| !views.contains(id)) {
+                    tab.layout = tab.layout.retain(&views)?;
+                }
+                if !tab.layout.contains(tab.focused) {
+                    tab.focused = tab.layout.ids()[0];
+                    tab.maximized = false;
+                }
+                Some(tab)
+            })
+            .collect();
+        self.active = previous
+            .and_then(|key| self.tabs.iter().position(|t| t.key == key))
+            .unwrap_or(0);
+        for created in created {
+            let placement = self.pending.pop_front().unwrap_or(Placement::Tab);
+            if let Some(id) = created {
+                if !views.contains(&id) {
+                    continue;
+                }
+                let split = if let Placement::Split { tab, pane, axis } = placement {
+                    if let Some(index) = self.tabs.iter().position(|t| t.key == tab)
+                        && self.tabs[index].layout.split(pane, id, axis)
+                    {
+                        self.tabs[index].focused = id;
+                        self.tabs[index].maximized = false;
+                        self.active = index;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !split {
+                    self.tabs
+                        .push(Self::tab(id, self.panes.get(&id).and_then(|p| p.name())));
+                    self.active = self.tabs.len() - 1;
+                }
             }
         }
-        self.active = new_active
-            .or_else(|| {
-                previous.and_then(|id| self.tabs.iter().position(|tab| tab.session.id == id))
-            })
-            .unwrap_or(0);
-        client.active(self.tabs.get(self.active).map(|tab| tab.session.id));
+        for id in views {
+            if !self.tabs.iter().any(|t| t.layout.contains(id)) {
+                self.tabs.push(Self::tab(id, self.panes[&id].name()));
+                self.active = self.tabs.len() - 1;
+            }
+        }
         if let Some(error) = client.take_error() {
             self.error = Some(error);
         }
     }
-
-    fn new_tab(&mut self, _ctx: &egui::Context) {
-        if let Some(client) = &self.client
-            && let Err(error) = client.send(Request::Create(Vec::new()))
+    fn tab(id: u64, name: Option<String>) -> Tab {
+        Tab {
+            key: id,
+            layout: Layout::Pane(id),
+            focused: id,
+            name,
+            maximized: false,
+        }
+    }
+    fn focused_session(&self) -> Option<&RemoteSession> {
+        self.tabs
+            .get(self.active)
+            .and_then(|tab| self.panes.get(&tab.focused))
+    }
+    fn create(&mut self, placement: Placement) {
+        if let Some(client) = &self.client {
+            match client.send(Request::Create(Vec::new())) {
+                Ok(()) => self.pending.push_back(placement),
+                Err(error) => self.error = Some(format!("{error:#}")),
+            }
+        }
+    }
+    fn new_tab(&mut self) {
+        self.create(Placement::Tab);
+    }
+    fn split(&mut self, axis: Axis) {
+        if let Some(tab) = self.tabs.get(self.active) {
+            self.create(Placement::Split {
+                tab: tab.key,
+                pane: tab.focused,
+                axis,
+            });
+        } else {
+            self.new_tab();
+        }
+    }
+    fn new_window(&mut self) {
+        let result = std::env::current_exe().and_then(|exe| {
+            Command::new(exe)
+                .arg("--new-window")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .spawn()
+        });
+        match result {
+            Ok(mut child) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Err(error) => self.error = Some(format!("Open new window: {error}")),
+        }
+    }
+    fn detach(&mut self) {
+        if let Some(session) = self.focused_session()
+            && let Some(client) = &self.client
+            && let Err(error) = client.send(Request::Detach(session.id))
         {
             self.error = Some(format!("{error:#}"));
         }
     }
-
-    fn detach(&mut self) {
+    fn detach_tab(&mut self) {
         if let Some(tab) = self.tabs.get(self.active)
             && let Some(client) = &self.client
-            && let Err(error) = client.send(Request::Detach(tab.session.id))
         {
-            self.error = Some(format!("{error:#}"));
+            for id in tab.layout.ids() {
+                if let Err(error) = client.send(Request::Detach(id)) {
+                    self.error = Some(format!("{error:#}"));
+                    break;
+                }
+            }
+        }
+    }
+    fn maximize(&mut self) {
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.maximized = !tab.maximized;
+        }
+    }
+    fn navigate(&mut self, key: Key, resize: bool) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        if resize {
+            let (axis, delta) = match key {
+                Key::ArrowLeft => (Axis::Right, -0.05),
+                Key::ArrowRight => (Axis::Right, 0.05),
+                Key::ArrowUp => (Axis::Below, -0.05),
+                _ => (Axis::Below, 0.05),
+            };
+            tab.layout.resize(tab.focused, axis, delta);
+            return;
+        }
+        if tab.maximized {
+            let ids = tab.layout.ids();
+            let current = ids.iter().position(|id| *id == tab.focused).unwrap_or(0);
+            let previous = matches!(key, Key::ArrowLeft | Key::ArrowUp);
+            tab.focused = ids[if previous {
+                (current + ids.len() - 1) % ids.len()
+            } else {
+                (current + 1) % ids.len()
+            }];
+            return;
+        }
+        let Some((_, current)) = self.pane_rects.iter().find(|(id, _)| *id == tab.focused) else {
+            return;
+        };
+        let center = current.center();
+        let candidate = self
+            .pane_rects
+            .iter()
+            .filter_map(|(id, rect)| {
+                if *id == tab.focused {
+                    return None;
+                }
+                let offset = rect.center() - center;
+                let (along, across) = match key {
+                    Key::ArrowLeft => (-offset.x, offset.y),
+                    Key::ArrowRight => (offset.x, offset.y),
+                    Key::ArrowUp => (-offset.y, offset.x),
+                    _ => (offset.y, offset.x),
+                };
+                (along > 0.0).then_some((*id, along + across.abs() * 2.0))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((id, _)) = candidate {
+            tab.focused = id;
         }
     }
 
     fn copy(&self, ctx: &egui::Context) {
-        if let Some(tab) = self.tabs.get(self.active)
-            && let Some(text) = tab.session.selected_text()
+        if let Some(session) = self.focused_session()
+            && let Some(text) = session.selected_text()
         {
             ctx.copy_text(text);
         }
@@ -152,8 +350,12 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     for (index, tab) in self.tabs.iter().enumerate() {
-                        let automatic_title = tab.session.title();
-                        let manual_name = tab.session.name();
+                        let automatic_title = self
+                            .panes
+                            .get(&tab.focused)
+                            .map(|s| s.title())
+                            .unwrap_or_default();
+                        let manual_name = tab.name.clone();
                         let title =
                             manual_name
                                 .as_deref()
@@ -178,11 +380,11 @@ impl App {
                         }
                         if response.double_clicked() {
                             self.rename = Some(index);
-                            self.rename_text = tab.session.name().unwrap_or_default();
+                            self.rename_text = tab.name.clone().unwrap_or_default();
                         }
                     }
                     if ui.button("+").on_hover_text("New shell tab").clicked() {
-                        self.new_tab(ctx);
+                        self.new_tab();
                     }
                     ui.menu_button("Sessions", |ui| {
                         if let Some(client) = &self.client {
@@ -209,12 +411,13 @@ impl App {
                                     ))
                                     .clicked()
                                 {
-                                    if self.tabs.iter().any(|tab| tab.session.id == info.id) {
+                                    if self.tabs.iter().any(|tab| tab.layout.contains(info.id)) {
                                         self.active = self
                                             .tabs
                                             .iter()
-                                            .position(|t| t.session.id == info.id)
+                                            .position(|t| t.layout.contains(info.id))
                                             .unwrap();
+                                        self.tabs[self.active].focused = info.id;
                                     } else if let Err(error) = client.send(Request::Attach(info.id))
                                     {
                                         self.error = Some(format!("{error:#}"));
@@ -227,7 +430,23 @@ impl App {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.menu_button("...", |ui| {
                             if ui.button("New tab").clicked() {
-                                self.new_tab(ctx);
+                                self.new_tab();
+                                ui.close();
+                            }
+                            if ui.button("New window").clicked() {
+                                self.new_window();
+                                ui.close();
+                            }
+                            if ui.button("Split right").clicked() {
+                                self.split(Axis::Right);
+                                ui.close();
+                            }
+                            if ui.button("Split below").clicked() {
+                                self.split(Axis::Below);
+                                ui.close();
+                            }
+                            if ui.button("Maximize / restore pane").clicked() {
+                                self.maximize();
                                 ui.close();
                             }
                             if ui.button("Rename tab…").clicked() {
@@ -235,17 +454,21 @@ impl App {
                                 self.rename_text = self
                                     .tabs
                                     .get(self.active)
-                                    .and_then(|t| t.session.name())
+                                    .and_then(|t| t.name.clone())
                                     .unwrap_or_default();
                                 ui.close();
                             }
                             if ui.button("Detach tab").clicked() {
+                                self.detach_tab();
+                                ui.close();
+                            }
+                            if ui.button("Detach pane").clicked() {
                                 self.detach();
                                 ui.close();
                             }
-                            if let Some(tab) = self.tabs.get(self.active) {
-                                let id = tab.session.id;
-                                let controlled = tab.session.controlled();
+                            if let Some(session) = self.focused_session() {
+                                let id = session.id;
+                                let controlled = session.controlled();
                                 if !controlled && ui.button("Take control").clicked() {
                                     if let Some(client) = &self.client
                                         && let Err(error) = client.send(Request::TakeControl(id))
@@ -279,141 +502,174 @@ impl App {
 
     fn terminal(&mut self, ctx: &egui::Context) {
         let bg = Color32::from_rgb(BACKGROUND[0], BACKGROUND[1], BACKGROUND[2]);
+        self.pane_rects.clear();
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(bg).inner_margin(6))
+            .frame(egui::Frame::new().fill(bg))
             .show(ctx, |ui| {
-                let (rect, response) =
-                    ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
-                if self.tabs.is_empty() {
+                let rect = ui.available_rect_before_wrap();
+                let Some(tab) = self.tabs.get_mut(self.active) else {
                     ui.painter().text(
-                        rect.min,
+                        rect.min + Vec2::splat(6.0),
                         Align2::LEFT_TOP,
                         "No attached sessions. Use + or the Sessions menu.",
                         FontId::monospace(14.0),
                         Color32::LIGHT_GRAY,
                     );
                     return;
-                }
-                let session = &self.tabs[self.active].session;
-                let font = FontId::monospace(14.0);
-                let width = ui.fonts_mut(|fonts| fonts.glyph_width(&font, 'M'));
-                let height = 14.0 * 1.2;
-                if let Err(error) = session.resize(
-                    (rect.width() / width) as u16,
-                    (rect.height() / height) as u16,
-                    width,
-                    height,
-                ) {
-                    self.error = Some(format!("{error:#}"));
-                }
-                let point = |pos: Pos2| {
-                    (
-                        ((pos.y - rect.top()).max(0.0) / height) as usize,
-                        ((pos.x - rect.left()).max(0.0) / width) as usize,
-                    )
                 };
-                if response.drag_started()
-                    && let Some(pos) = ctx.input(|i| i.pointer.press_origin())
-                {
-                    let (row, col) = point(pos);
-                    if session.controlled()
-                        && let Err(error) = session.select(row, col, true)
-                    {
-                        self.error = Some(format!("{error:#}"));
-                    }
+                if tab.maximized {
+                    self.pane_rects.push((tab.focused, rect));
+                } else {
+                    tab.layout.show(ui, rect, &mut self.pane_rects);
                 }
-                if response.dragged()
-                    && let Some(pos) = response.interact_pointer_pos()
-                {
-                    let (row, col) = point(pos);
-                    if session.controlled()
-                        && let Err(error) = session.select(row, col, false)
-                    {
-                        self.error = Some(format!("{error:#}"));
-                    }
-                }
-                if response.clicked()
-                    && let Some(pos) = response.interact_pointer_pos()
-                {
-                    let (row, col) = point(pos);
-                    if session.controlled()
-                        && let Err(error) = session.select(row, col, true)
-                    {
-                        self.error = Some(format!("{error:#}"));
-                    }
-                }
-                let screen = session.screen();
-                if let Some(error) = &screen.error {
-                    self.error = Some(error.clone());
-                }
-                let painter = ui.painter().with_clip_rect(rect);
-                for cell in &screen.cells {
-                    let position =
-                        rect.min + Vec2::new(cell.col as f32 * width, cell.row as f32 * height);
-                    let cell_rect = Rect::from_min_size(
-                        position,
-                        Vec2::new(width * if cell.wide { 2.0 } else { 1.0 }, height),
-                    );
-                    let cell_bg = if cell.selected {
-                        Color32::from_rgb(65, 83, 112)
-                    } else {
-                        Color32::from_rgb(cell.bg[0], cell.bg[1], cell.bg[2])
-                    };
-                    if cell_bg != bg {
-                        painter.rect_filled(cell_rect, 0, cell_bg);
-                    }
-                    let fg = Color32::from_rgb(cell.fg[0], cell.fg[1], cell.fg[2]);
-                    if cell.text != " " {
-                        painter.text(position, Align2::LEFT_TOP, &cell.text, font.clone(), fg);
-                    }
-                    if cell.underline {
-                        painter.line_segment(
-                            [cell_rect.left_bottom(), cell_rect.right_bottom()],
-                            (1.0, fg),
+                let panes = self.pane_rects.clone();
+                for (id, rect) in panes {
+                    let focused = self.tabs[self.active].focused == id;
+                    if self.pane_rects.len() > 1 && focused {
+                        ui.painter().rect_stroke(
+                            rect.shrink(1.0),
+                            0,
+                            (1.0, Color32::from_gray(80)),
+                            egui::StrokeKind::Inside,
                         );
                     }
+                    self.paint_pane(ui, ctx, id, rect.shrink(6.0), focused);
                 }
-                if let Some((row, col)) = screen.cursor
-                    && ctx.input(|i| i.focused)
-                    && !screen.exited
-                {
-                    let pos = rect.min + Vec2::new(col as f32 * width, row as f32 * height);
-                    painter.rect_stroke(
-                        Rect::from_min_size(pos, Vec2::new(width, height)),
-                        0,
-                        (1.0, Color32::from_gray(235)),
-                        egui::StrokeKind::Inside,
-                    );
-                }
-                if screen.exited {
-                    painter.text(
-                        rect.right_bottom(),
-                        Align2::RIGHT_BOTTOM,
-                        "Process exited",
-                        FontId::monospace(12.0),
-                        Color32::GRAY,
-                    );
-                }
-                // A native title bar, one small tab row, and an uninterrupted terminal.
-                let manual_name = self.tabs[self.active].session.name();
-                let title = manual_name
-                    .as_deref()
-                    .unwrap_or(if screen.title.is_empty() {
-                        "Shell"
-                    } else {
-                        &screen.title
-                    });
-                if !session.controlled() && !screen.exited {
-                    painter.text(
-                        rect.right_bottom(),
-                        Align2::RIGHT_BOTTOM,
-                        "Read-only · Take control in menu",
-                        FontId::monospace(12.0),
-                        Color32::GRAY,
-                    );
-                }
-                ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("Opterm — {title}")));
             });
+        if let Some(client) = &self.client {
+            client.visible(self.pane_rects.iter().map(|(id, _)| *id).collect());
+        }
+        if let Some(tab) = self.tabs.get(self.active)
+            && let Some(session) = self.panes.get(&tab.focused)
+        {
+            let automatic = session.title();
+            let title = tab.name.as_deref().unwrap_or(if automatic.is_empty() {
+                "Shell"
+            } else {
+                &automatic
+            });
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("Opterm — {title}")));
+        }
+    }
+    fn paint_pane(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        id: u64,
+        rect: Rect,
+        focused: bool,
+    ) {
+        let bg = Color32::from_rgb(BACKGROUND[0], BACKGROUND[1], BACKGROUND[2]);
+        let session = &self.panes[&id];
+        let response = ui.interact(rect, egui::Id::new(("pane", id)), Sense::click_and_drag());
+        let font = FontId::monospace(14.0);
+        let width = ui.fonts_mut(|fonts| fonts.glyph_width(&font, 'M'));
+        let height = 14.0 * 1.2;
+        if let Err(error) = session.resize(
+            (rect.width() / width) as u16,
+            (rect.height() / height) as u16,
+            width,
+            height,
+        ) {
+            self.error = Some(format!("{error:#}"));
+        }
+        let point = |pos: Pos2| {
+            (
+                ((pos.y - rect.top()).max(0.0) / height) as usize,
+                ((pos.x - rect.left()).max(0.0) / width) as usize,
+            )
+        };
+        if response.drag_started()
+            && let Some(pos) = ctx.input(|i| i.pointer.press_origin())
+        {
+            let (row, col) = point(pos);
+            if session.controlled()
+                && let Err(error) = session.select(row, col, true)
+            {
+                self.error = Some(format!("{error:#}"));
+            }
+        }
+        if response.dragged()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let (row, col) = point(pos);
+            if session.controlled()
+                && let Err(error) = session.select(row, col, false)
+            {
+                self.error = Some(format!("{error:#}"));
+            }
+        }
+        if response.clicked()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let (row, col) = point(pos);
+            if session.controlled()
+                && let Err(error) = session.select(row, col, true)
+            {
+                self.error = Some(format!("{error:#}"));
+            }
+        }
+        let screen = session.screen();
+        if let Some(error) = &screen.error {
+            self.error = Some(error.clone());
+        }
+        let painter = ui.painter().with_clip_rect(rect);
+        for cell in &screen.cells {
+            let position = rect.min + Vec2::new(cell.col as f32 * width, cell.row as f32 * height);
+            let cell_rect = Rect::from_min_size(
+                position,
+                Vec2::new(width * if cell.wide { 2.0 } else { 1.0 }, height),
+            );
+            let cell_bg = if cell.selected {
+                Color32::from_rgb(65, 83, 112)
+            } else {
+                Color32::from_rgb(cell.bg[0], cell.bg[1], cell.bg[2])
+            };
+            if cell_bg != bg {
+                painter.rect_filled(cell_rect, 0, cell_bg);
+            }
+            let fg = Color32::from_rgb(cell.fg[0], cell.fg[1], cell.fg[2]);
+            if cell.text != " " {
+                painter.text(position, Align2::LEFT_TOP, &cell.text, font.clone(), fg);
+            }
+            if cell.underline {
+                painter.line_segment(
+                    [cell_rect.left_bottom(), cell_rect.right_bottom()],
+                    (1.0, fg),
+                );
+            }
+        }
+        if let Some((row, col)) = screen.cursor
+            && focused
+            && ctx.input(|i| i.focused)
+            && !screen.exited
+        {
+            let pos = rect.min + Vec2::new(col as f32 * width, row as f32 * height);
+            painter.rect_stroke(
+                Rect::from_min_size(pos, Vec2::new(width, height)),
+                0,
+                (1.0, Color32::from_gray(235)),
+                egui::StrokeKind::Inside,
+            );
+        }
+        if screen.exited {
+            painter.text(
+                rect.right_bottom(),
+                Align2::RIGHT_BOTTOM,
+                "Process exited",
+                FontId::monospace(12.0),
+                Color32::GRAY,
+            );
+        }
+        if !session.controlled() && !screen.exited {
+            painter.text(
+                rect.right_bottom(),
+                Align2::RIGHT_BOTTOM,
+                "Read-only · Take control in menu",
+                FontId::monospace(12.0),
+                Color32::GRAY,
+            );
+        }
     }
 
     fn events(&mut self, ctx: &egui::Context) {
@@ -424,9 +680,98 @@ impl App {
         {
             return;
         }
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let mut pending = None;
         let events = ctx.input(|i| i.events.clone());
         let modifiers = ctx.input(|i| i.modifiers);
         for (index, event) in events.iter().cloned().enumerate() {
+            let boundary = matches!(
+                &event,
+                egui::Event::PointerButton { .. }
+                    | egui::Event::Paste(_)
+                    | egui::Event::MouseWheel { .. }
+            ) || matches!(&event, egui::Event::Key { pressed: true, modifiers, .. } if input::app_shortcut(*modifiers) || input::pane_navigation(*modifiers));
+            if boundary && let Err(error) = flush_input(&mut pending, &client) {
+                self.error = Some(format!("{error:#}"));
+                continue;
+            }
+
+            // Process focus changes in event order. A later click in the same
+            // frame must not redirect text that was typed before that click.
+            if let egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                ..
+            } = &event
+            {
+                if let Some((id, _)) = self.pane_rects.iter().find(|(_, rect)| rect.contains(*pos))
+                    && let Some(tab) = self.tabs.get_mut(self.active)
+                {
+                    tab.focused = *id;
+                    ctx.request_repaint();
+                }
+                continue;
+            }
+
+            if let egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = &event
+            {
+                if input::pane_navigation(*modifiers)
+                    && matches!(
+                        key,
+                        Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown
+                    )
+                {
+                    self.navigate(
+                        *key,
+                        if cfg!(target_os = "macos") {
+                            modifiers.shift
+                        } else {
+                            modifiers.alt
+                        },
+                    );
+                    ctx.request_repaint();
+                    continue;
+                }
+                if input::app_shortcut(*modifiers) {
+                    match key {
+                        Key::N => {
+                            self.new_window();
+                            continue;
+                        }
+                        Key::E if !cfg!(target_os = "macos") => {
+                            self.split(Axis::Right);
+                            continue;
+                        }
+                        Key::O if !cfg!(target_os = "macos") => {
+                            self.split(Axis::Below);
+                            continue;
+                        }
+                        Key::D if cfg!(target_os = "macos") => {
+                            self.split(if modifiers.shift {
+                                Axis::Below
+                            } else {
+                                Axis::Right
+                            });
+                            continue;
+                        }
+                        Key::Enter if modifiers.shift => {
+                            self.maximize();
+                            ctx.request_repaint();
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
             if let egui::Event::Key {
                 key: Key::T,
                 pressed: true,
@@ -435,7 +780,7 @@ impl App {
             } = &event
                 && input::app_shortcut(*modifiers)
             {
-                self.new_tab(ctx);
+                self.new_tab();
                 continue;
             }
             if let egui::Event::Key {
@@ -449,14 +794,18 @@ impl App {
                 self.detach();
                 continue;
             }
-            let Some(tab) = self.tabs.get(self.active) else {
+            let Some(session) = self
+                .tabs
+                .get(self.active)
+                .and_then(|tab| self.panes.get(&tab.focused))
+            else {
                 continue;
             };
             let result = match event {
                 egui::Event::Copy => {
                     let modifiers = input::clipboard_modifiers(&events, index, Key::C, modifiers);
                     if !cfg!(target_os = "macos") && modifiers.ctrl && !modifiers.shift {
-                        tab.session.write(b"\x03")
+                        queue_input(&mut pending, &client, session.id, b"\x03")
                     } else {
                         self.copy(ctx);
                         Ok(())
@@ -469,28 +818,33 @@ impl App {
                         && !modifiers.shift
                         && !self.paste_requested
                     {
-                        tab.session.write(b"\x16")
+                        queue_input(&mut pending, &client, session.id, b"\x16")
                     } else {
                         self.paste_requested = false;
-                        tab.session.paste(&text)
+                        session.paste(&text)
                     }
                 }
                 egui::Event::Text(text) => {
                     if modifiers.ctrl || modifiers.mac_cmd {
                         Ok(())
                     } else if modifiers.alt {
-                        tab.session.write(format!("\x1b{text}").as_bytes())
+                        queue_input(
+                            &mut pending,
+                            &client,
+                            session.id,
+                            format!("\x1b{text}").as_bytes(),
+                        )
                     } else {
-                        tab.session.write(text.as_bytes())
+                        queue_input(&mut pending, &client, session.id, text.as_bytes())
                     }
                 }
                 egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
-                    tab.session.write(text.as_bytes())
+                    queue_input(&mut pending, &client, session.id, text.as_bytes())
                 }
                 egui::Event::Cut => {
                     let modifiers = input::clipboard_modifiers(&events, index, Key::X, modifiers);
                     if !cfg!(target_os = "macos") && modifiers.ctrl {
-                        tab.session.write(b"\x18")
+                        queue_input(&mut pending, &client, session.id, b"\x18")
                     } else {
                         self.copy(ctx);
                         Ok(())
@@ -502,9 +856,9 @@ impl App {
                     modifiers,
                     ..
                 } => {
-                    let mode = tab.session.mode();
+                    let mode = session.mode();
                     match input::encode_key(key, modifiers, mode) {
-                        Some(bytes) => tab.session.write(&bytes),
+                        Some(bytes) => queue_input(&mut pending, &client, session.id, &bytes),
                         None => Ok(()),
                     }
                 }
@@ -514,8 +868,13 @@ impl App {
                         egui::MouseWheelUnit::Point => delta.y / (14.0 * 1.2),
                         egui::MouseWheelUnit::Page => delta.y * 30.0,
                     };
-                    if tab.session.controlled() {
-                        tab.session.scroll(lines.round() as i32)
+                    let hovered = ctx
+                        .input(|i| i.pointer.hover_pos())
+                        .and_then(|pos| self.pane_rects.iter().find(|(_, rect)| rect.contains(pos)))
+                        .and_then(|(id, _)| self.panes.get(id))
+                        .unwrap_or(session);
+                    if hovered.controlled() {
+                        hovered.scroll(lines.round() as i32)
                     } else {
                         Ok(())
                     }
@@ -525,6 +884,9 @@ impl App {
             if let Err(error) = result {
                 self.error = Some(format!("{error:#}"));
             }
+        }
+        if let Err(error) = flush_input(&mut pending, &client) {
+            self.error = Some(format!("{error:#}"));
         }
     }
 }
@@ -546,11 +908,14 @@ impl eframe::App for App {
                     );
                     ui.horizontal(|ui| {
                         if ui.button("Save").clicked() {
-                            if let Some(tab) = self.tabs.get(index) {
+                            if let Some(tab) = self.tabs.get_mut(index) {
                                 let name = (!self.rename_text.trim().is_empty())
                                     .then(|| self.rename_text.trim().to_owned());
-                                if let Err(error) = tab.session.rename(name) {
-                                    self.error = Some(format!("{error:#}"));
+                                if let Some(session) = self.panes.get(&tab.layout.ids()[0]) {
+                                    match session.rename(name.clone()) {
+                                        Ok(()) => tab.name = name,
+                                        Err(error) => self.error = Some(format!("{error:#}")),
+                                    }
                                 }
                             }
                             self.rename = None;
@@ -615,6 +980,10 @@ fn main() {
         println!("Session service stopped; its sessions were ended.");
         return;
     }
+    let restore = !program.first().is_some_and(|s| s == "--new-window");
+    if !restore {
+        program.remove(0);
+    }
     if program.first().is_some_and(|s| s == "--") {
         program.remove(0);
     }
@@ -627,7 +996,7 @@ fn main() {
                 .with_min_inner_size([320.0, 160.0]),
             ..Default::default()
         },
-        Box::new(move |cc| Ok(Box::new(App::new(cc, program)))),
+        Box::new(move |cc| Ok(Box::new(App::new(cc, program, restore)))),
     ) {
         eprintln!("{error}");
         std::process::exit(1);

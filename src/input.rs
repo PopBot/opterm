@@ -31,6 +31,15 @@ pub fn app_shortcut(mods: Modifiers) -> bool {
     }
 }
 
+// Reserved pane navigation; ordinary shell arrows retain their existing behavior.
+pub fn pane_navigation(mods: Modifiers) -> bool {
+    if cfg!(target_os = "macos") {
+        mods.mac_cmd && mods.alt && !mods.ctrl
+    } else {
+        mods.ctrl && mods.shift && !mods.mac_cmd
+    }
+}
+
 pub fn encode_key(key: Key, mods: Modifiers, mode: TermMode) -> Option<Vec<u8>> {
     if mods.mac_cmd {
         return None;
