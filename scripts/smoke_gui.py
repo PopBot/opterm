@@ -16,6 +16,7 @@ import zlib
 import tomllib
 import json
 import socket
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / 'target'
@@ -203,6 +204,87 @@ def main():
             screenshot(display)
             raise
         print('Native selection, copy, and paste: passed')
+        # Inspect bytes at a real raw PTY, not a shell's line editor. The helper
+        # restores terminal modes before returning to the same persistent shell.
+        capture_script = Path(state.name) / 'capture-input.py'
+        capture_script.write_text("""import os, select, sys, termios, time, tty
+from pathlib import Path
+ready, result, modes = sys.argv[1:]
+saved = termios.tcgetattr(0)
+data = bytearray()
+try:
+    tty.setraw(0)
+    os.write(1, modes.encode())
+    Path(ready).write_text('ready')
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        if select.select([0], [], [], 0.5 if data else 0.1)[0]:
+            data.extend(os.read(0, 65536))
+        elif data:
+            break
+    Path(result).write_bytes(data)
+finally:
+    os.write(1, b'\\x1b[?2004l\\x1b[?1000l\\x1b[?1002l\\x1b[?1003l\\x1b[?1006l')
+    termios.tcsetattr(0, termios.TCSANOW, saved)
+""")
+        def capture_input(name, modes, send):
+            ready = Path(state.name) / (name + '-ready')
+            result = Path(state.name) / (name + '-bytes')
+            # Expand fixed escaped modes in the shell so control characters
+            # never enter the command line being edited interactively.
+            command = "python3 '" + str(capture_script) + "' '" + str(ready) + "' '" + str(result) + "' "
+            command += '"$(printf \'%b\' \'' + modes.replace('\x1b', '\\033') + '\')"\n'
+            type_text(command)
+            wait_until(ready.exists)
+            time.sleep(0.3)
+            send()
+            wait_until(result.exists)
+            time.sleep(0.2)
+            return result.read_bytes()
+        # Native clipboard selection ownership needs xclip only for this test;
+        # the application itself uses its normal platform clipboard integration.
+        import shutil
+        if shutil.which('xclip'):
+            paste = b'alpha\r\nbeta\ngamma\tend'
+            clipboard = subprocess.Popen(['xclip', '-selection', 'clipboard', '-quiet'],
+                                         env=env, stdin=subprocess.PIPE,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                clipboard.stdin.write(paste); clipboard.stdin.close()
+                time.sleep(0.2)
+                def paste_input():
+                    key(0xffe3, 1); key(0xffe1, 1); key(ord('v'), 1); key(ord('v'), 0)
+                    key(0xffe1, 0); key(0xffe3, 0); X.XFlush(dpy)
+                actual = capture_input('bracketed-paste', '\x1b[?2004h', paste_input)
+                assert actual == b'\x1b[200~' + paste + b'\x1b[201~', actual
+            finally:
+                clipboard.terminate(); clipboard.wait(timeout=3)
+            print('Native bracketed paste preserves exact CRLF, LF, and tab bytes: passed')
+        else:
+            print('Exact native clipboard-byte check skipped: xclip is unavailable')
+        def special_keys():
+            for symbol in (0xffbe, 0xffc9):  # F1, F12.
+                key(symbol, 1); key(symbol, 0)
+            key(0xffe3, 1); key(0xff53, 1); key(0xff53, 0); key(0xffe3, 0)
+            key(0xffe1, 1); key(0xff09, 1); key(0xff09, 0); key(0xffe1, 0)
+            X.XFlush(dpy)
+        actual = capture_input('special-keys', '', special_keys)
+        assert actual == b'\x1bOP\x1b[24~\x1b[1;5C\x1b[Z', actual
+        print('Native F1, F12, Ctrl+Right, and Shift+Tab sequences: passed')
+        def mouse_input():
+            XT.XTestFakeMotionEvent(dpy, -1, 80, 90, 0)
+            XT.XTestFakeButtonEvent(dpy, 1, 1, 0); XT.XTestFakeButtonEvent(dpy, 1, 0, 0)
+            XT.XTestFakeButtonEvent(dpy, 4, 1, 0); XT.XTestFakeButtonEvent(dpy, 4, 0, 0)
+            X.XFlush(dpy)
+        actual = capture_input('mouse-reporting', '\x1b[?1000h\x1b[?1006h', mouse_input)
+        reports = re.findall(rb'\x1b\[<(\d+);(\d+);(\d+)([Mm])', actual)
+        assert 3 <= len(reports) <= 8, actual
+        assert [(code, ending) for code, _, _, ending in reports[:2]] == [(b'0', b'M'), (b'0', b'm')], actual
+        # Native wheel distance can become several terminal scroll steps.
+        assert all(code == b'64' and ending == b'M' for code, _, _, ending in reports[2:]), actual
+        assert all(int(col) > 0 and int(row) > 0 for _, col, row, _ in reports), actual
+        assert len({(col, row) for _, col, row, _ in reports}) == 1, actual
+        print('Native SGR mouse press/release and wheel reporting: passed')
         # Settings live in a separate native window. All preferences paths are isolated.
         def open_settings():
             key(0xffe3, 1); key(0xffe1, 1); key(ord(','), 1); key(ord(','), 0); key(0xffe1, 0); key(0xffe3, 0)
@@ -300,6 +382,37 @@ def main():
         terminal_focus(); settings_window = open_settings(); field(14); click(35, 520)
         wait_until(lambda: not find_windows("Opterm Settings"))
         assert 'font_size = 14.0' in config.read_text()
+        # Reassign one application shortcut through the existing live-file and
+        # recovery path. Its former chord must stop creating tabs immediately.
+        terminal_focus()
+        original_shortcuts = config.read_bytes()
+        preferences = tomllib.loads(original_shortcuts.decode())
+        assert preferences['copy_on_select'] is False
+        assert preferences['shortcuts']['new_tab'] == 'Ctrl+Shift+T'
+        assert preferences['shortcuts']['next_tab'] == ''
+        assert preferences['shortcuts']['previous_tab'] == ''
+        custom_shortcuts = original_shortcuts.replace(b'new_tab = "Ctrl+Shift+T"', b'new_tab = "Ctrl+Shift+Y"')
+        assert custom_shortcuts != original_shortcuts
+        config.write_bytes(custom_shortcuts)
+        wait_until(lambda: backup.read_bytes() == custom_shortcuts)
+        layout_path = wait_until(lambda: next(iter((Path(env['OPTERM_STATE_DIR']) / 'layouts').glob('*.json')), None))
+        def tab_count():
+            return len(json.loads(layout_path.read_text())['tabs'])
+        def app_chord(letter):
+            key(0xffe3, 1); key(0xffe1, 1); key(ord(letter), 1); key(ord(letter), 0)
+            key(0xffe1, 0); key(0xffe3, 0); X.XFlush(dpy)
+        count = tab_count()
+        app_chord('t'); time.sleep(1.3)
+        assert tab_count() == count, 'The former New tab shortcut was still active'
+        # The former chord now belongs to the terminal; clear any shell input.
+        key(0xffe3, 1); key(ord('c'), 1); key(ord('c'), 0); key(0xffe3, 0); X.XFlush(dpy)
+        app_chord('y')
+        wait_until(lambda: tab_count() == count + 1)
+        app_chord('w')
+        wait_until(lambda: tab_count() == count)
+        config.write_bytes(original_shortcuts)
+        wait_until(lambda: backup.read_bytes() == original_shortcuts)
+        print('Custom New tab binding applies live, former binding is disabled, and settings recovery tracks the change: passed')
         terminal_focus(); settings_window = open_settings()
         print('Settings screenshot:', screenshot(display, 'prototype-settings-linux.png'))
         # Compact profile and theme editors, using real native controls.

@@ -52,17 +52,34 @@ fn alternate_screen_restores_main_screen() {
 }
 
 #[test]
-fn paste_adds_no_enter_and_preserves_bracketed_framing() {
-    let session = Session::spawn(&["/bin/sh".into(), "-c".into(),
-        "stty raw -echo; printf '\\033[?2004hREADY'; dd bs=1 count=15 2>/dev/null | od -An -tx1".into()], || {}).unwrap();
-    wait_for(&session, |s| s.text().contains("READY"));
-    session.paste("a\nb").unwrap();
-    let screen = wait_for(&session, |s| s.text().contains("1b 5b 32 30 31 7e"));
-    assert!(
-        screen
+fn paste_preserves_exact_bytes_with_and_without_bracketed_framing() {
+    let text = "a\r\nb\nc\rλ\t";
+    for bracketed in [false, true] {
+        let mut expected = Vec::new();
+        if bracketed {
+            expected.extend_from_slice(b"\x1b[200~");
+        }
+        expected.extend_from_slice(text.as_bytes());
+        if bracketed {
+            expected.extend_from_slice(b"\x1b[201~");
+        }
+        let mode = if bracketed { "\\033[?2004h" } else { "" };
+        let script = format!(
+            "stty raw -echo; printf '{mode}READY'; dd bs=1 count={} 2>/dev/null | od -An -tx1; printf 'DONE'",
+            expected.len()
+        );
+        let session = Session::spawn(&["/bin/sh".into(), "-c".into(), script], || {}).unwrap();
+        wait_for(&session, |s| s.text().contains("READY"));
+        session.paste(text).unwrap();
+        let screen = wait_for(&session, |s| s.text().contains("DONE"));
+        let actual: String = screen
             .text()
-            .contains("1b 5b 32 30 30 7e 61 0a 62 1b 5b 32 30 31 7e")
-    );
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let hex: String = expected.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert!(actual.contains(&hex), "bracketed={bracketed}: {actual}");
+    }
 }
 
 #[test]

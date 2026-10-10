@@ -89,18 +89,8 @@ impl Dialog {
             match self.section {
                 0 => appearance(ui, &mut self.draft.appearance, fonts),
                 1 => {
-                    ui.label("Current shortcuts");
-                    egui::Grid::new("shortcut-defaults").spacing([32.0, 6.0]).show(ui, |ui| {
-                        let mac = cfg!(target_os = "macos");
-                        for (name, key) in [("New tab", if mac {"Cmd+T"} else {"Ctrl+Shift+T"}),
-                            ("New window", if mac {"Cmd+N"} else {"Ctrl+Shift+N"}),
-                            ("Copy / paste", if mac {"Cmd+C / Cmd+V"} else {"Ctrl+Shift+C / Ctrl+Shift+V"}),
-                            ("Settings", if mac {"Cmd+,"} else {"Ctrl+Shift+,"})] {
-                            ui.label(name); ui.monospace(key); ui.end_row();
-                        }
-                    });
-                    ui.label("Copy on select is off. Ctrl+C interrupts the terminal program.");
-                    ui.weak("Custom bindings and clipboard options come in a later slice.");
+                    shortcuts(ui, &mut self.draft);
+
                 }
                 2 => {
                     if let Some(message) = self.profiles.show(ui, &mut self.draft) { self.message = Some(message); }
@@ -237,4 +227,37 @@ fn appearance(ui: &mut egui::Ui, a: &mut Appearance, fonts: &[String]) {
         );
     }
     ui.weak("Terminal color themes are selected in Profiles.");
+}
+
+fn shortcuts(ui: &mut egui::Ui, draft: &mut Settings) {
+    ui.checkbox(
+        &mut draft.copy_on_select,
+        "Copy selected text automatically",
+    );
+    ui.weak(
+        "Ctrl+C interrupts the terminal unless deliberately rebound. Empty bindings are disabled.",
+    );
+    ui.horizontal(|ui| {
+        if ui.button("Reset shortcuts").clicked() {
+            draft.shortcuts = opterm::shortcuts::Shortcuts::default();
+        }
+        ui.weak("Example: Ctrl+Shift+T or Cmd+T");
+    });
+    egui::Grid::new("editable-shortcuts")
+        .spacing([12.0, 4.0])
+        .show(ui, |ui| {
+            for action in opterm::shortcuts::Action::ALL {
+                ui.label(action.label());
+                let binding = draft.shortcuts.0.entry(action).or_default();
+                ui.add(egui::TextEdit::singleline(binding).desired_width(190.0));
+                if ui.small_button("Unbind").clicked() {
+                    binding.clear();
+                }
+                ui.end_row();
+            }
+        });
+    if let Err(error) = draft.shortcuts.validate() {
+        ui.colored_label(Color32::from_rgb(190, 85, 55), error.to_string());
+    }
+    ui.weak("To reassign an occupied shortcut, explicitly Unbind its previous action before Save.");
 }

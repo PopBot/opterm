@@ -60,6 +60,8 @@ pub struct Settings {
     pub profiles: Vec<Profile>,
     pub themes: Vec<Theme>,
     pub restore_layout: bool,
+    pub shortcuts: crate::shortcuts::Shortcuts,
+    pub copy_on_select: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -71,6 +73,8 @@ impl Default for Settings {
             profiles: Vec::new(),
             themes: Vec::new(),
             restore_layout: true,
+            shortcuts: crate::shortcuts::Shortcuts::default(),
+            copy_on_select: false,
         }
     }
 }
@@ -81,6 +85,7 @@ impl Settings {
             "Unsupported settings version {} (expected 2)",
             self.version
         );
+        self.shortcuts.validate()?;
         let a = &self.appearance;
         ensure!(
             !a.font_family.trim().is_empty()
@@ -674,6 +679,32 @@ mod tests {
         assert!(commit(temp, &s.paths.backup).is_err());
         assert_eq!(fs::read(&s.paths.backup).unwrap(), good);
         assert_eq!(s.recovery().unwrap().appearance.font_size, 17.0);
+    }
+    #[test]
+    fn shortcut_migration_reassignment_and_backup_are_validated() {
+        use crate::shortcuts::Action;
+        let old = Settings::parse(b"version = 1\n").unwrap();
+        assert_eq!(old.shortcuts, crate::shortcuts::Shortcuts::default());
+        assert!(!old.copy_on_select);
+        let (_temp, mut s) = store();
+        let mut draft = s.current.clone();
+        draft
+            .shortcuts
+            .0
+            .insert(Action::NewTab, "Ctrl+Alt+T".into());
+        draft.copy_on_select = true;
+        s.save(&draft, &s.disk_revision(), false).unwrap();
+        assert_eq!(s.recovery().unwrap(), draft);
+        let backup = fs::read(&s.paths.backup).unwrap();
+        let active = fs::read(&s.paths.config).unwrap();
+        draft
+            .shortcuts
+            .0
+            .insert(Action::NewWindow, "alt+control+t".into());
+        assert!(s.save(&draft, &s.disk_revision(), false).is_err());
+        assert_eq!(fs::read(&s.paths.backup).unwrap(), backup);
+        assert_eq!(fs::read(&s.paths.config).unwrap(), active);
+        assert_eq!(Settings::parse(&backup).unwrap(), s.current);
     }
     #[cfg(unix)]
     #[test]

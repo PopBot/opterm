@@ -6,6 +6,7 @@ mod settings_ui;
 use opterm::{
     layout::{Axis, Layout},
     layouts::{self, Node, SavedTab, SessionRef},
+    shortcuts::Action as Shortcut,
 };
 
 use eframe::egui::{self, Align2, Color32, FontId, Key, Pos2, Rect, Sense, Vec2};
@@ -130,6 +131,8 @@ struct App {
     saved_layout: Option<layouts::Store>,
     missing: BTreeMap<u64, Missing>,
     layout_poll: Instant,
+    mouse_button: Option<(u64, u8, Rect)>,
+    pending_copy: Option<(u64, Instant)>,
 }
 
 fn install_font(ctx: &egui::Context, database: &fontdb::Database, family: &str) -> bool {
@@ -223,6 +226,8 @@ impl App {
             saved_layout,
             missing: BTreeMap::new(),
             layout_poll: Instant::now(),
+            mouse_button: None,
+            pending_copy: None,
             settings_dialog: None,
             settings_poll: Instant::now(),
             settings,
@@ -1020,7 +1025,10 @@ impl App {
                 ((pos.x - rect.left()).max(0.0) / width) as usize,
             )
         };
-        if response.drag_started()
+        let local_selection =
+            !input::mouse_reporting(session.mode()) || ctx.input(|i| i.modifiers.shift);
+        if local_selection
+            && response.drag_started()
             && let Some(pos) = ctx.input(|i| i.pointer.press_origin())
         {
             let (row, col) = point(pos);
@@ -1030,7 +1038,8 @@ impl App {
                 self.error = Some(format!("{error:#}"));
             }
         }
-        if response.dragged()
+        if local_selection
+            && response.dragged()
             && let Some(pos) = response.interact_pointer_pos()
         {
             let (row, col) = point(pos);
@@ -1040,7 +1049,8 @@ impl App {
                 self.error = Some(format!("{error:#}"));
             }
         }
-        if response.clicked()
+        if local_selection
+            && response.clicked()
             && let Some(pos) = response.interact_pointer_pos()
         {
             let (row, col) = point(pos);
@@ -1049,6 +1059,10 @@ impl App {
             {
                 self.error = Some(format!("{error:#}"));
             }
+        }
+        if local_selection && response.drag_stopped() && self.settings.current.copy_on_select {
+            self.pending_copy = Some((id, Instant::now()));
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
         let screen = session.screen();
         let bg = Color32::from_rgb(
@@ -1145,6 +1159,85 @@ impl App {
         }
     }
 
+    fn shortcut(&mut self, action: Shortcut, ctx: &egui::Context) {
+        match action {
+            Shortcut::NewTab => self.new_tab(),
+            Shortcut::NewWindow => self.new_window(),
+            Shortcut::Close => self.detach(),
+            Shortcut::Copy => self.copy(ctx),
+            Shortcut::Paste => {
+                self.paste_requested = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+            }
+            Shortcut::Settings => self.open_settings(),
+            Shortcut::SplitRight => self.split(Axis::Right),
+            Shortcut::SplitBelow => self.split(Axis::Below),
+            Shortcut::Maximize => self.maximize(),
+            Shortcut::FocusLeft => self.navigate(Key::ArrowLeft, false),
+            Shortcut::FocusRight => self.navigate(Key::ArrowRight, false),
+            Shortcut::FocusUp => self.navigate(Key::ArrowUp, false),
+            Shortcut::FocusDown => self.navigate(Key::ArrowDown, false),
+            Shortcut::ResizeLeft => self.navigate(Key::ArrowLeft, true),
+            Shortcut::ResizeRight => self.navigate(Key::ArrowRight, true),
+            Shortcut::ResizeUp => self.navigate(Key::ArrowUp, true),
+            Shortcut::ResizeDown => self.navigate(Key::ArrowDown, true),
+            Shortcut::NextTab if !self.tabs.is_empty() => {
+                self.active = (self.active + 1) % self.tabs.len()
+            }
+            Shortcut::PreviousTab if !self.tabs.is_empty() => {
+                self.active = (self.active + self.tabs.len() - 1) % self.tabs.len()
+            }
+            _ => {}
+        }
+        ctx.request_repaint();
+    }
+
+    fn mouse_input(
+        &self,
+        ctx: &egui::Context,
+        pos: Pos2,
+        event: input::Mouse,
+        mods: egui::Modifiers,
+    ) -> Option<(u64, Vec<u8>)> {
+        let captured = if matches!(event, input::Mouse::Motion(_) | input::Mouse::Release(_)) {
+            self.mouse_button
+        } else {
+            None
+        };
+        let (id, rect) = if let Some((id, _, saved_rect)) = captured {
+            (
+                id,
+                self.pane_rects
+                    .iter()
+                    .find(|(pane, _)| *pane == id)
+                    .map(|(_, rect)| *rect)
+                    .unwrap_or(saved_rect),
+            )
+        } else {
+            self.pane_rects
+                .iter()
+                .find(|(_, rect)| rect.contains(pos))
+                .map(|(id, rect)| (*id, *rect))?
+        };
+        let session = self.panes.get(&id)?;
+        if !session.controlled() {
+            return None;
+        }
+        let mut mods = mods;
+        if captured.is_some() && matches!(event, input::Mouse::Release(_)) {
+            mods.shift = false;
+        }
+        let appearance = &self.settings.current.appearance;
+        let width =
+            ctx.fonts_mut(|fonts| fonts.glyph_width(&FontId::monospace(appearance.font_size), 'M'));
+        let height = appearance.font_size * appearance.line_height;
+        let row = (((pos.y - rect.top()).max(0.0) / height) as usize)
+            .min(((rect.height() / height) as usize).saturating_sub(1));
+        let col = (((pos.x - rect.left()).max(0.0) / width) as usize)
+            .min(((rect.width() / width) as usize).saturating_sub(1));
+        input::encode_mouse(event, row, col, mods, session.mode()).map(|bytes| (id, bytes))
+    }
+
     fn events(&mut self, ctx: &egui::Context) {
         if self.rename.is_some()
             || self.end_session.is_some()
@@ -1157,6 +1250,7 @@ impl App {
             return;
         };
         let mut pending = None;
+        let mut shortcut_text = false;
         let events = ctx.input(|i| i.events.clone());
         let modifiers = ctx.input(|i| i.modifiers);
         for (index, event) in events.iter().cloned().enumerate() {
@@ -1165,7 +1259,7 @@ impl App {
                 egui::Event::PointerButton { .. }
                     | egui::Event::Paste(_)
                     | egui::Event::MouseWheel { .. }
-            ) || matches!(&event, egui::Event::Key { pressed: true, modifiers, .. } if input::app_shortcut(*modifiers) || input::pane_navigation(*modifiers));
+            ) || matches!(&event, egui::Event::Key { key, pressed: true, modifiers, .. } if self.settings.current.shortcuts.action(*key, *modifiers).is_some());
             if boundary && let Err(error) = flush_input(&mut pending, &client) {
                 self.error = Some(format!("{error:#}"));
                 continue;
@@ -1179,189 +1273,237 @@ impl App {
                 pressed: true,
                 ..
             } = &event
+                && let Some((id, _)) = self.pane_rects.iter().find(|(_, rect)| rect.contains(*pos))
+                && let Some(tab) = self.tabs.get_mut(self.active)
             {
-                if let Some((id, _)) = self.pane_rects.iter().find(|(_, rect)| rect.contains(*pos))
-                    && let Some(tab) = self.tabs.get_mut(self.active)
-                {
-                    tab.focused = *id;
-                    ctx.request_repaint();
-                }
-                continue;
+                tab.focused = *id;
+                ctx.request_repaint();
             }
 
+            if matches!(&event, egui::Event::Key { pressed: true, .. }) {
+                shortcut_text = false;
+            }
+            let clipboard_key = match &event {
+                egui::Event::Copy => Some(Key::C),
+                egui::Event::Cut => Some(Key::X),
+                egui::Event::Paste(_) if !self.paste_requested => Some(Key::V),
+                _ => None,
+            };
+            if let Some(key) = clipboard_key {
+                let mods = input::clipboard_modifiers(&events, index, key, modifiers);
+                if let Some(action) = self.settings.current.shortcuts.action(key, mods)
+                    && !(key == Key::V && action == Shortcut::Paste)
+                {
+                    self.shortcut(action, ctx);
+                    continue;
+                }
+            }
             if let egui::Event::Key {
                 key,
                 pressed: true,
                 modifiers,
                 ..
             } = &event
+                && let Some(action) = self.settings.current.shortcuts.action(*key, *modifiers)
             {
-                if input::pane_navigation(*modifiers)
-                    && matches!(
-                        key,
-                        Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown
-                    )
-                {
-                    self.navigate(
-                        *key,
-                        if cfg!(target_os = "macos") {
-                            modifiers.shift
-                        } else {
-                            modifiers.alt
-                        },
-                    );
-                    ctx.request_repaint();
-                    continue;
-                }
-                if input::app_shortcut(*modifiers) {
-                    match key {
-                        Key::Comma => {
-                            self.open_settings();
-                            continue;
-                        }
-                        Key::N => {
-                            self.new_window();
-                            continue;
-                        }
-                        Key::E if !cfg!(target_os = "macos") => {
-                            self.split(Axis::Right);
-                            continue;
-                        }
-                        Key::O if !cfg!(target_os = "macos") => {
-                            self.split(Axis::Below);
-                            continue;
-                        }
-                        Key::D if cfg!(target_os = "macos") => {
-                            self.split(if modifiers.shift {
-                                Axis::Below
+                self.shortcut(action, ctx);
+                shortcut_text = true;
+                continue;
+            }
+            let mouse = match &event {
+                egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed,
+                    modifiers,
+                } => {
+                    let button = match button {
+                        egui::PointerButton::Primary => Some(0),
+                        egui::PointerButton::Middle => Some(1),
+                        egui::PointerButton::Secondary => Some(2),
+                        _ => None,
+                    };
+                    button.map(|button| {
+                        (
+                            *pos,
+                            if *pressed {
+                                input::Mouse::Press(button)
                             } else {
-                                Axis::Right
-                            });
-                            continue;
-                        }
-                        Key::Enter if modifiers.shift => {
-                            self.maximize();
-                            ctx.request_repaint();
-                            continue;
-                        }
-                        _ => {}
-                    }
+                                input::Mouse::Release(button)
+                            },
+                            *modifiers,
+                        )
+                    })
                 }
-            }
-
-            if let egui::Event::Key {
-                key: Key::T,
-                pressed: true,
-                modifiers,
-                ..
-            } = &event
-                && input::app_shortcut(*modifiers)
+                egui::Event::PointerMoved(pos) => Some((
+                    *pos,
+                    input::Mouse::Motion(self.mouse_button.map(|(_, button, _)| button)),
+                    modifiers,
+                )),
+                _ => None,
+            };
+            if let Some((pos, event, mods)) = mouse
+                && let Some((id, bytes)) = self.mouse_input(ctx, pos, event, mods)
             {
-                self.new_tab();
+                if let input::Mouse::Press(button) = event
+                    && let Some((_, rect)) = self.pane_rects.iter().find(|(pane, _)| *pane == id)
+                {
+                    self.mouse_button = Some((id, button, *rect));
+                }
+                if matches!(event, input::Mouse::Release(_)) {
+                    self.mouse_button = None;
+                }
+                if let Err(error) = queue_input(&mut pending, &client, id, &bytes) {
+                    self.error = Some(format!("{error:#}"));
+                }
                 continue;
             }
-            if let egui::Event::Key {
-                key: Key::W,
-                pressed: true,
-                modifiers,
-                ..
-            } = &event
-                && input::app_shortcut(*modifiers)
-            {
-                self.detach();
-                continue;
+            if matches!(&event, egui::Event::PointerButton { pressed: false, .. }) {
+                self.mouse_button = None;
             }
-            let Some(session) = self
+            let Some(id) = self
                 .tabs
                 .get(self.active)
-                .and_then(|tab| self.panes.get(&tab.focused))
+                .map(|tab| tab.focused)
+                .filter(|id| self.panes.contains_key(id))
             else {
                 continue;
             };
-            let result = match event {
-                egui::Event::Copy => {
-                    let modifiers = input::clipboard_modifiers(&events, index, Key::C, modifiers);
-                    if !cfg!(target_os = "macos") && modifiers.ctrl && !modifiers.shift {
-                        queue_input(&mut pending, &client, session.id, b"\x03")
-                    } else {
-                        self.copy(ctx);
-                        Ok(())
+            let session = client.session(id);
+            let result = (|| -> anyhow::Result<()> {
+                match event {
+                    egui::Event::Copy => {
+                        let modifiers =
+                            input::clipboard_modifiers(&events, index, Key::C, modifiers);
+                        if !self.settings.current.shortcuts.matches(
+                            Shortcut::Copy,
+                            Key::C,
+                            modifiers,
+                        ) && !cfg!(target_os = "macos")
+                            && modifiers.ctrl
+                        {
+                            queue_input(&mut pending, &client, session.id, b"\x03")
+                        } else {
+                            self.copy(ctx);
+                            Ok(())
+                        }
                     }
-                }
-                egui::Event::Paste(text) => {
-                    let modifiers = input::clipboard_modifiers(&events, index, Key::V, modifiers);
-                    if !cfg!(target_os = "macos")
-                        && modifiers.ctrl
-                        && !modifiers.shift
-                        && !self.paste_requested
-                    {
-                        queue_input(&mut pending, &client, session.id, b"\x16")
-                    } else {
-                        self.paste_requested = false;
-                        session.paste(&text)
+                    egui::Event::Paste(text) => {
+                        let modifiers =
+                            input::clipboard_modifiers(&events, index, Key::V, modifiers);
+                        if !self.settings.current.shortcuts.matches(
+                            Shortcut::Paste,
+                            Key::V,
+                            modifiers,
+                        ) && !self.paste_requested
+                        {
+                            queue_input(&mut pending, &client, session.id, b"\x16")
+                        } else {
+                            self.paste_requested = false;
+                            // egui normalizes CRLF; use the native clipboard's
+                            // original text so terminal paste preserves every byte.
+                            let original = arboard::Clipboard::new()
+                                .and_then(|mut clipboard| clipboard.get_text())
+                                .unwrap_or(text);
+                            session.paste(&original)
+                        }
                     }
-                }
-                egui::Event::Text(text) => {
-                    if modifiers.ctrl || modifiers.mac_cmd {
-                        Ok(())
-                    } else if modifiers.alt {
-                        queue_input(
-                            &mut pending,
-                            &client,
-                            session.id,
-                            format!("\x1b{text}").as_bytes(),
-                        )
-                    } else {
+                    egui::Event::Text(text) => {
+                        if shortcut_text {
+                            shortcut_text = false;
+                            Ok(())
+                        } else if modifiers.ctrl || modifiers.mac_cmd {
+                            Ok(())
+                        } else if modifiers.alt {
+                            queue_input(
+                                &mut pending,
+                                &client,
+                                session.id,
+                                format!("\x1b{text}").as_bytes(),
+                            )
+                        } else {
+                            queue_input(&mut pending, &client, session.id, text.as_bytes())
+                        }
+                    }
+                    egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
                         queue_input(&mut pending, &client, session.id, text.as_bytes())
                     }
-                }
-                egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
-                    queue_input(&mut pending, &client, session.id, text.as_bytes())
-                }
-                egui::Event::Cut => {
-                    let modifiers = input::clipboard_modifiers(&events, index, Key::X, modifiers);
-                    if !cfg!(target_os = "macos") && modifiers.ctrl {
-                        queue_input(&mut pending, &client, session.id, b"\x18")
-                    } else {
-                        self.copy(ctx);
-                        Ok(())
-                    }
-                }
-                egui::Event::Key {
-                    key,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } => {
-                    let mode = session.mode();
-                    match input::encode_key(key, modifiers, mode) {
-                        Some(bytes) => queue_input(&mut pending, &client, session.id, &bytes),
-                        None => Ok(()),
-                    }
-                }
-                egui::Event::MouseWheel { unit, delta, .. } => {
-                    let lines = match unit {
-                        egui::MouseWheelUnit::Line => delta.y * 3.0,
-                        egui::MouseWheelUnit::Point => {
-                            delta.y
-                                / (self.settings.current.appearance.font_size
-                                    * self.settings.current.appearance.line_height)
+                    egui::Event::Cut => {
+                        let modifiers =
+                            input::clipboard_modifiers(&events, index, Key::X, modifiers);
+                        if !cfg!(target_os = "macos") && modifiers.ctrl {
+                            queue_input(&mut pending, &client, session.id, b"\x18")
+                        } else {
+                            self.copy(ctx);
+                            Ok(())
                         }
-                        egui::MouseWheelUnit::Page => delta.y * 30.0,
-                    };
-                    let hovered = ctx
-                        .input(|i| i.pointer.hover_pos())
-                        .and_then(|pos| self.pane_rects.iter().find(|(_, rect)| rect.contains(pos)))
-                        .and_then(|(id, _)| self.panes.get(id))
-                        .unwrap_or(session);
-                    if hovered.controlled() {
-                        hovered.scroll(lines.round() as i32)
-                    } else {
-                        Ok(())
                     }
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } => {
+                        let mode = session.mode();
+                        match input::encode_key(key, modifiers, mode) {
+                            Some(bytes) => queue_input(&mut pending, &client, session.id, &bytes),
+                            None => Ok(()),
+                        }
+                    }
+                    egui::Event::MouseWheel {
+                        unit,
+                        delta,
+                        modifiers,
+                    } => {
+                        if delta.y == 0.0 {
+                            return Ok(());
+                        }
+                        if let Some(pos) = ctx.input(|i| i.pointer.hover_pos())
+                            && let Some((id, bytes)) = self.mouse_input(
+                                ctx,
+                                pos,
+                                input::Mouse::Wheel(delta.y > 0.0),
+                                modifiers,
+                            )
+                        {
+                            let steps = match unit {
+                                egui::MouseWheelUnit::Line => delta.y.abs().ceil(),
+                                _ => (delta.y.abs()
+                                    / (self.settings.current.appearance.font_size
+                                        * self.settings.current.appearance.line_height))
+                                    .ceil(),
+                            }
+                            .clamp(1.0, 30.0) as usize;
+                            for _ in 0..steps {
+                                queue_input(&mut pending, &client, id, &bytes)?;
+                            }
+                            return Ok(());
+                        }
+                        let lines = match unit {
+                            egui::MouseWheelUnit::Line => delta.y * 3.0,
+                            egui::MouseWheelUnit::Point => {
+                                delta.y
+                                    / (self.settings.current.appearance.font_size
+                                        * self.settings.current.appearance.line_height)
+                            }
+                            egui::MouseWheelUnit::Page => delta.y * 30.0,
+                        };
+                        let hovered = ctx
+                            .input(|i| i.pointer.hover_pos())
+                            .and_then(|pos| {
+                                self.pane_rects.iter().find(|(_, rect)| rect.contains(pos))
+                            })
+                            .and_then(|(id, _)| self.panes.get(id))
+                            .unwrap_or(&session);
+                        if hovered.controlled() {
+                            hovered.scroll(lines.round() as i32)
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    _ => Ok(()),
                 }
-                _ => Ok(()),
-            };
+            })();
             if let Err(error) = result {
                 self.error = Some(format!("{error:#}"));
             }
@@ -1383,6 +1525,18 @@ impl eframe::App for App {
             if previous != self.settings.observed && self.settings.notice.is_some() {
                 self.open_settings();
             }
+        }
+        if let Some((id, since)) = self.pending_copy
+            && since.elapsed() >= Duration::from_millis(100)
+        {
+            if let Some(text) = self
+                .panes
+                .get(&id)
+                .and_then(|session| session.selected_text())
+            {
+                ctx.copy_text(text);
+            }
+            self.pending_copy = None;
         }
         ctx.request_repaint_after(Duration::from_secs(1));
         self.sync_tabs();
