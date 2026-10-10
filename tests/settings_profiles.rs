@@ -6,6 +6,10 @@ fn store(temp: &tempfile::TempDir) -> Store {
     Store::load(Paths {
         config: temp.path().join("settings/settings.toml"),
         backup: temp.path().join("recovery/last-valid-settings.toml"),
+        cache: temp.path().join("cache"),
+        locator: Some(temp.path().join("app-data/settings-location.json")),
+        selected_root: None,
+        location_notice: None,
     })
 }
 fn configured() -> Settings {

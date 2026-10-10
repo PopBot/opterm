@@ -310,9 +310,9 @@ fn interactive_sessions_enable_color_and_keep_palette_and_truecolor() {
     write(
         &mut connection,
         id,
-        "printf 'COLOR_ENV:%s:%s:%s\\n' \"$TERM\" \"$COLORTERM\" \"${NO_COLOR-unset}\"; printf '\\033[31mRED\\033[91mBRIGHT\\033[38;5;208mINDEXED\\033[38;2;12;170;240mRGB\\033[0m\\n'\n",
+        "stty -echo; printf '\\033[2J\\033[H'; printf 'COLOR_ENV:%s:%s:%s\\n' \"$TERM\" \"$COLORTERM\" \"${NO_COLOR-unset}\"; printf '\\033[31mRED\\033[91mBRIGHT\\033[38;5;208mINDEXED\\033[38;2;12;170;240mRGB\\033[0m\\n'; printf '%s_%s\\n' COLOR DONE\n",
     );
-    let current = wait_screen(&mut connection, id, "RGB");
+    let current = wait_screen(&mut connection, id, "COLOR_DONE");
     assert!(
         current
             .screen

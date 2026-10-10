@@ -77,6 +77,7 @@ pub struct Client {
     queued: Arc<AtomicUsize>,
     pub profiles: bool,
     pub search_supported: bool,
+    pub history_supported: bool,
     pub instance: String,
 }
 impl Client {
@@ -108,7 +109,30 @@ impl Client {
         create_if_empty: bool,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Arc<Self>> {
+        Self::open_with_history(
+            path,
+            launch,
+            force_new,
+            reconnect,
+            create_if_empty,
+            None,
+            wake,
+        )
+    }
+    pub fn open_with_history(
+        path: &Path,
+        launch: Launch,
+        force_new: bool,
+        reconnect: Reconnect,
+        create_if_empty: bool,
+        history: Option<&crate::history::Options>,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Arc<Self>> {
         let mut connection = Connection::connect_or_start(path)?;
+        if let Some(history) = history.filter(|_| connection.history_supported) {
+            history.validate()?;
+            connection.call(Request::ConfigHistory(history.clone()))?;
+        }
         let mut state = State::default();
         let Reply::List(infos) = connection.call(Request::List)? else {
             bail!("Invalid session list reply");
@@ -160,6 +184,7 @@ impl Client {
         }
         let profiles = connection.profiles;
         let search_supported = connection.search_supported;
+        let history_supported = connection.history_supported;
         let instance = connection.instance.clone();
         state.visible = state.views.iter().copied().collect();
         let state = Arc::new(Mutex::new(state));
@@ -171,6 +196,7 @@ impl Client {
             queued: queued.clone(),
             profiles,
             search_supported,
+            history_supported,
             instance,
         });
         thread::Builder::new().name("opterm-service-client".into()).spawn(move || {
@@ -248,6 +274,14 @@ impl Client {
 
     pub fn send(&self, request: Request) -> Result<()> {
         ensure!(
+            self.history_supported
+                || !matches!(
+                    &request,
+                    Request::ConfigHistory(_) | Request::Recording { .. }
+                ),
+            "Running service predates saved output controls. Existing sessions stay running; upgrade after its work finishes."
+        );
+        ensure!(
             self.search_supported || !matches!(&request, Request::Search { .. }),
             "Running service predates scrollback search. Existing sessions stay running."
         );
@@ -282,6 +316,10 @@ impl Client {
             bail!("Terminal request was not queued: {error}");
         }
         Ok(())
+    }
+    pub fn configure_history(&self, options: &crate::history::Options) -> Result<()> {
+        options.validate()?;
+        self.send(Request::ConfigHistory(options.clone()))
     }
     pub fn search(
         &self,
@@ -424,6 +462,12 @@ impl RemoteSession {
             .screens
             .get(&self.id)
             .and_then(|c| c.selected.clone())
+    }
+    pub fn recording(&self, enabled: bool) -> Result<()> {
+        self.client.send(Request::Recording {
+            id: self.id,
+            enabled,
+        })
     }
     pub fn write(&self, bytes: &[u8]) -> Result<()> {
         self.client.send(Request::Write {

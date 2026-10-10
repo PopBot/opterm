@@ -295,12 +295,13 @@ impl App {
             } else {
                 Reconnect::Detached
             };
-            Client::open_with(
+            Client::open_with_history(
                 &path,
                 launch,
                 !app.program.is_empty(),
                 reconnect,
                 restored_window.is_none() && !matches!(startup, Startup::Receive(_)),
+                Some(&app.settings.current.history),
                 move || notify.request_repaint(),
             )
         }) {
@@ -308,6 +309,16 @@ impl App {
             Err(error) => app.error = Some(format!("{error:#}")),
         }
         app.apply_appearance(&cc.egui_ctx);
+        if app
+            .client
+            .as_ref()
+            .is_some_and(|client| !client.history_supported)
+        {
+            let previous = app.settings.notice.take().unwrap_or_default();
+            app.settings.notice = Some(format!(
+                "{previous} Running service predates saved output controls. Existing work stays running; finish its sessions before deliberately upgrading the service."
+            ));
+        }
         if app
             .client
             .as_ref()
@@ -478,6 +489,12 @@ impl App {
                 Err(error) => self.error = Some(format!("Apply themes: {error:#}")),
             }
         }
+        if let Some(client) = &self.client
+            && client.history_supported
+            && let Err(error) = client.configure_history(&self.settings.current.history)
+        {
+            self.error = Some(format!("Apply output settings: {error:#}"));
+        }
         ctx.request_repaint();
     }
     fn show_settings(&mut self, ctx: &egui::Context) {
@@ -534,6 +551,38 @@ impl App {
                     open::that_detached(self.settings.paths.backup.parent().unwrap())
                 {
                     dialog.message = Some(format!("Open recovery folder: {error}"));
+                }
+            }
+            Some(Action::StageStorage) => {
+                dialog.message = Some(
+                    match self
+                        .settings
+                        .stage_location(std::path::Path::new(&dialog.storage_root))
+                    {
+                        Ok(path) => format!(
+                            "Saved settings copied to {}. Close and reopen the desktop to use this folder. Your sessions keep running.",
+                            path.display()
+                        ),
+                        Err(error) => format!("Change folder: {error:#}"),
+                    },
+                );
+            }
+            Some(Action::ClearCache) => {
+                dialog.message = Some(match opterm::storage::clear_cache(&self.settings.paths) {
+                    Ok(bytes) => format!(
+                        "Cleared {bytes} bytes of disposable cache. Settings, saved output, layouts and recovery are retained."
+                    ),
+                    Err(error) => format!("Clear cache: {error:#}"),
+                });
+            }
+            Some(Action::HistoryFolder) => {
+                let result = service::state_dir().and_then(|path| {
+                    let path = path.join("history");
+                    anyhow::ensure!(path.is_dir(), "No saved output folder yet. Saving output requires a compatible session service.");
+                    open::that_detached(path).map_err(Into::into)
+                });
+                if let Err(error) = result {
+                    dialog.message = Some(format!("Open saved output: {error:#}"));
                 }
             }
             None => {}
@@ -1061,6 +1110,32 @@ impl App {
                             if let Some(session) = self.focused_session() {
                                 let id = session.id;
                                 let controlled = session.controlled();
+                                if let Some(client) = &self.client
+                                    && client.history_supported
+                                    && let Some(info) =
+                                        client.infos().into_iter().find(|info| info.id == id)
+                                {
+                                    let mut recording = info.recording;
+                                    if ui
+                                        .add_enabled(
+                                            controlled && self.settings.current.history.enabled,
+                                            egui::Checkbox::new(
+                                                &mut recording,
+                                                "Save this session's output",
+                                            ),
+                                        )
+                                        .changed()
+                                        && let Err(error) = client.send(Request::Recording {
+                                            id,
+                                            enabled: recording,
+                                        })
+                                    {
+                                        self.error = Some(format!("Output recording: {error:#}"));
+                                    }
+                                    if let Some(error) = info.history_error {
+                                        ui.weak(error);
+                                    }
+                                }
                                 if !controlled && ui.button("Take control").clicked() {
                                     if let Some(client) = &self.client
                                         && let Err(error) = client.send(Request::TakeControl(id))

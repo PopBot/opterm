@@ -62,6 +62,7 @@ pub struct Settings {
     pub restore_layout: bool,
     pub shortcuts: crate::shortcuts::Shortcuts,
     pub copy_on_select: bool,
+    pub history: crate::history::Options,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -75,6 +76,7 @@ impl Default for Settings {
             restore_layout: true,
             shortcuts: crate::shortcuts::Shortcuts::default(),
             copy_on_select: false,
+            history: crate::history::Options::default(),
         }
     }
 }
@@ -86,6 +88,7 @@ impl Settings {
             self.version
         );
         self.shortcuts.validate()?;
+        self.history.validate()?;
         let a = &self.appearance;
         ensure!(
             !a.font_family.trim().is_empty()
@@ -239,12 +242,18 @@ impl Settings {
 pub struct Paths {
     pub config: PathBuf,
     pub backup: PathBuf,
+    pub cache: PathBuf,
+    pub locator: Option<PathBuf>,
+    pub selected_root: Option<PathBuf>,
+    pub location_notice: Option<String>,
 }
 impl Paths {
     pub fn discover() -> Result<Self> {
         let dirs = directories::ProjectDirs::from("", "", "opterm")
             .context("Cannot locate Opterm preferences")?;
-        let config = std::env::var_os("OPTERM_CONFIG_DIR")
+        let override_config = std::env::var_os("OPTERM_CONFIG_DIR");
+        let config = override_config
+            .clone()
             .map(PathBuf::from)
             .unwrap_or_else(|| dirs.config_dir().join("settings"));
         let recovery = std::env::var_os("OPTERM_RECOVERY_DIR")
@@ -253,12 +262,22 @@ impl Paths {
         let paths = Self {
             config: config.join("settings.toml"),
             backup: recovery.join("last-valid-settings.toml"),
+            cache: if override_config.is_some() {
+                config.join("cache")
+            } else {
+                dirs.cache_dir().to_path_buf()
+            },
+            locator: override_config
+                .is_none()
+                .then(|| dirs.data_local_dir().join("settings-location.json")),
+            selected_root: None,
+            location_notice: None,
         };
         ensure!(
             paths.config != paths.backup,
             "Settings and backup must be separate files"
         );
-        Ok(paths)
+        Ok(crate::storage::discover(paths))
     }
 }
 /// Exact bounded file contents, not timestamps: quick edits are detected reliably.
@@ -429,11 +448,16 @@ pub struct Store {
 }
 impl Store {
     pub fn load(paths: Paths) -> Self {
-        let observed = revision(&paths.config);
+        let observed = paths
+            .location_notice
+            .as_ref()
+            .map(|message| Revision::Unreadable(message.clone()))
+            .unwrap_or_else(|| revision(&paths.config));
+        let location_notice = paths.location_notice.clone();
         let mut store = Self {
             paths,
             current: Settings::default(),
-            notice: None,
+            notice: location_notice,
             observed,
         };
         if let Revision::Bytes(bytes) = &store.observed {
@@ -457,10 +481,12 @@ impl Store {
                 }
             }
         } else {
-            store.notice = Some(format!(
-                "Settings missing or unreadable at {}.",
-                store.paths.config.display()
-            ));
+            if store.notice.is_none() {
+                store.notice = Some(format!(
+                    "Settings missing or unreadable at {}.",
+                    store.paths.config.display()
+                ));
+            }
         }
         let recovery = read_recovery(&store.paths);
         let message = match recovery {
@@ -479,6 +505,16 @@ impl Store {
         ));
         store
     }
+    /// Copy current validated settings and remember their next-launch location.
+    /// Running preferences, recovery, layouts and session service paths do not move.
+    pub fn stage_location(&mut self, root: &Path) -> Result<PathBuf> {
+        let destination = crate::storage::stage(&self.paths, &self.current, root)?;
+        self.notice = Some(format!(
+            "Settings copied to {}. This window keeps its current location; the chosen folder activates on the next desktop launch. Original files and running sessions were preserved.",
+            destination.display()
+        ));
+        Ok(destination)
+    }
     pub fn disk_revision(&self) -> Revision {
         revision(&self.paths.config)
     }
@@ -492,6 +528,9 @@ impl Store {
     }
     /// Apply valid external edits; keep current preferences on every failure.
     pub fn poll(&mut self) -> bool {
+        if self.paths.location_notice.is_some() {
+            return false;
+        }
         let next = self.disk_revision();
         if next == self.observed {
             return false;
@@ -531,6 +570,10 @@ impl Store {
     /// Each replacement is atomic. A crash between files leaves two valid generations.
     /// Prepare both before replacing either; a failed config write cannot advance backup.
     pub fn save(&mut self, draft: &Settings, baseline: &Revision, replace: bool) -> Result<()> {
+        ensure!(
+            self.paths.location_notice.is_none(),
+            "Settings location needs repair. Choose an available Opterm folder and relaunch before saving."
+        );
         let bytes = draft.encode()?;
         let _lock = save_lock(&self.paths)?;
         ensure!(
@@ -568,6 +611,10 @@ mod tests {
         let paths = Paths {
             config: temp.path().join("settings/settings.toml"),
             backup: temp.path().join("recovery/last-valid-settings.toml"),
+            cache: temp.path().join("cache"),
+            locator: Some(temp.path().join("app-data/settings-location.json")),
+            selected_root: None,
+            location_notice: None,
         };
         (temp, Store::load(paths))
     }

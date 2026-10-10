@@ -4,7 +4,7 @@ A lightweight cross-platform terminal for macOS, Linux, and Windows, with built-
 
 ## Current status
 
-The Rust prototype runs a real local shell in the approved thin layout, with tabs, splits, multiple windows, resize, selection, copy/paste, and scrollback. A small background service now keeps shells and terminal programs alive when you close or crash the desktop. Reopening Opterm reconnects to those live sessions. Saved windows restore tabs, splits, names, sizes, and focus by reconnecting to existing work. Settings include appearance, launch profiles, per-profile terminal themes, TOML configuration, and a last-valid recovery backup. No database is involved. See [prototype status and limitations](docs/prototype-status.md).
+The Rust prototype runs a real local shell in the approved thin layout, with tabs, splits, multiple windows, resize, selection, copy/paste, and scrollback. A small background service now keeps shells and terminal programs alive when you close or crash the desktop. Reopening Opterm reconnects to those live sessions. Saved windows restore tabs, splits, names, sizes, and focus by reconnecting to existing work. Settings include appearance, launch profiles, per-profile terminal themes, TOML configuration, a last-valid recovery backup, custom settings/cache folders, and bounded saved output. No database is involved. See [prototype status and limitations](docs/prototype-status.md).
 
 ## Screenshots
 
@@ -90,6 +90,8 @@ In **Settings → Profiles**, create shell/agent presets with executable, argume
 In **Settings → Shortcuts & clipboard**, edit action bindings, explicitly unbind conflicting actions, or reset platform defaults. Save applies bindings immediately and preserves the settings backup. Copy-on-select is optional and initially off. F1–F20 and standard modified keys reach terminal programs. Mouse-aware programs receive clicks, dragging and wheel input; hold Shift to select or scroll locally. Native paste preserves text and line breaks without adding Enter.
 
 Press Cmd+F (macOS) or Ctrl+Shift+F (Linux/Windows) for compact literal scrollback search. Enter finds the next match; Shift+Enter finds the previous one; Escape closes the row. Drag tabs to reorder them. Right-click a tab to move its entire split layout to another window, or drag it outside the window to create one. Transfers preserve running processes and manual names; a failed or timed-out handoff keeps the source tab.
+
+In **Settings → Sessions & history**, control saved-output recording and retention, stage a custom settings/cache folder for the next launch, or clear disposable cache. The recovery backup remains separate. The session menu can pause/resume recording without stopping work. See the [storage guide](docs/user-guide.md#saved-output-and-storage-folders).
 
 Windows save their own tabs, splits, names, size, and focus. Reopening restores their arrangement and reconnects surviving sessions. Unavailable work remains visible without command replay or replacement shells. Toggle restoration under **Settings → Sessions & history**, or use `--no-restore` for one fresh launch. See [saved layouts and recovery behavior](docs/saved-layouts.md).
 

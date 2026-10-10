@@ -8,6 +8,8 @@ pub struct Dialog {
     pub message: Option<String>,
     pub conflict: bool,
     profiles: crate::profiles_ui::Editor,
+    pub storage_root: String,
+    picker: Option<std::sync::mpsc::Receiver<anyhow::Result<Option<std::path::PathBuf>>>>,
 }
 #[derive(Clone, Copy)]
 pub enum Action {
@@ -18,6 +20,9 @@ pub enum Action {
     Restore,
     Edit,
     BackupFolder,
+    StageStorage,
+    ClearCache,
+    HistoryFolder,
 }
 impl Dialog {
     pub fn new(store: &Store) -> Self {
@@ -28,6 +33,13 @@ impl Dialog {
             message: None,
             conflict: false,
             profiles: crate::profiles_ui::Editor::default(),
+            storage_root: store
+                .paths
+                .selected_root
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            picker: None,
         }
     }
     pub fn show(
@@ -37,6 +49,23 @@ impl Dialog {
         fonts: &[String],
     ) -> Option<Action> {
         let mut action = None;
+        if let Some(receiver) = &self.picker {
+            match receiver.try_recv() {
+                Ok(Ok(Some(path))) => {
+                    self.storage_root = path.display().to_string();
+                    self.picker = None;
+                }
+                Ok(Ok(None)) => self.picker = None,
+                Ok(Err(error)) => {
+                    self.message = Some(format!("{error:#}"));
+                    self.picker = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.picker = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    root.request_repaint_after(std::time::Duration::from_millis(100))
+                }
+            }
+        }
         root.show_viewport_immediate(
             egui::ViewportId::from_hash_of("opterm-settings"),
             egui::ViewportBuilder::default()
@@ -98,8 +127,34 @@ impl Dialog {
                 _ => {
                     ui.checkbox(&mut self.draft.restore_layout, "Restore saved windows, tabs and splits on startup");
                     ui.label("Closing the desktop leaves shells and agents running in the session service.");
-                    ui.label("Live scrollback: 10,000 lines per session. Saved history is not implemented yet.");
-                    ui.weak("Appearance saves do not restart sessions or the service.");
+                    ui.checkbox(&mut self.draft.history.enabled, "Save terminal output");
+                    egui::Grid::new("history-options").min_col_width(140.0).spacing([16.0, 4.0]).show(ui, |ui| {
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                        ui.label("Live scrollback lines"); ui.add(egui::DragValue::new(&mut self.draft.history.scrollback_lines).range(0..=100_000)); ui.end_row();
+                        ui.label("Keep saved output"); ui.add(egui::DragValue::new(&mut self.draft.history.retention_days).range(1..=3650).suffix(" days")); ui.end_row();
+                        ui.label("Total / per stream"); ui.horizontal(|ui| {
+                            ui.add(egui::DragValue::new(&mut self.draft.history.total_mib).range(1..=102_400).suffix(" MiB"));
+                            ui.add(egui::DragValue::new(&mut self.draft.history.stream_mib).range(1..=102_400).suffix(" MiB"));
+                        }); ui.end_row();
+                    });
+                    if ui.button("Open saved output folder").clicked() { *action = Some(Action::HistoryFolder); }
+                    ui.weak("Raw output may contain private information. Pause a session in its … menu. History and layout files are separate from disposable cache.");
+                    ui.separator();
+                    ui.label("Custom Opterm folder");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut self.storage_root).desired_width(360.0).hint_text("Absolute folder path"));
+                        if ui.add_enabled(self.picker.is_none(), egui::Button::new("Browse…")).clicked() {
+                            let (sender, receiver) = std::sync::mpsc::channel();
+                            self.picker = Some(receiver);
+                            std::thread::spawn(move || { let _ = sender.send(opterm::storage::pick_directory()); });
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Use folder on next launch").clicked() { *action = Some(Action::StageStorage); }
+                        if ui.button("Clear cache").clicked() { *action = Some(Action::ClearCache); }
+                    });
+                    ui.weak("Copies currently saved settings; Save your edits first. Existing settings and the separate recovery backup are retained.");
+                    ui.label(egui::RichText::new(format!("Active cache: {}", store.paths.cache.display())).small());
                 }
             }
             if let Some(message) = self.message.as_ref().or(store.notice.as_ref()) {

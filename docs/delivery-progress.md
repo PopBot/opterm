@@ -6,7 +6,7 @@ The user authorized completing the remaining phases in order, committing and pus
 | --- | --- | --- |
 | 1 | Terminal input compatibility and editable shortcuts | Complete; 38 Rust tests, strict Clippy and native X11 checks passed |
 | 2 | Tab reorder, tab movement between windows, drag-out, scrollback search | Complete; 47 Rust tests, strict Clippy and focused native controls checks passed |
-| 3 | Custom settings/cache location and bounded saved-output controls | Not started |
+| 3 | Custom settings/cache location and bounded saved-output controls | Complete; 60 Rust tests, strict Clippy and native storage checks passed |
 | 4 | Native platform checks and demonstrated fixes | Not started; unavailable platforms must remain unverified |
 | 5 | Reproducible performance measurement, measured optimization, packaging | Not started |
 
@@ -23,3 +23,11 @@ A compact Find row searches literal case-sensitive text in bounded live scrollba
 Tab dragging reorders tabs; dragging outside the window creates a window or targets another open window where native position information is available. A tab context menu provides explicit moves to new/existing windows. A private, bounded temporary offer contains only the tab's saved tree/name/focus and session references. The destination attaches available sessions and saves the tab before acknowledging it; the source retains its tab until acceptance and keeps it on a timeout. This is a small local file handoff, not a command ledger. Cross-window drag destination detection needs native positioning, so the explicit menu remains available on Wayland.
 
 Native Phase 2 checks preserve all four shell PIDs while reordering, dragging a split tab into a new window and moving another tab into that window. No replacement sessions are created. Run `python3 scripts/smoke_gui.py --controls-only` for the focused check.
+
+## Phase 3
+
+Sessions & history now includes output recording, configurable scrollback/retention/total/per-stream limits, a native folder picker, next-launch settings/cache relocation, and safe cache maintenance. Validated currently saved settings are copied without replacing a differing destination; original settings and separate last-valid recovery remain. Invalid/unavailable remembered locations report recovery/choose-location actions and block silent fallback saves. Cache cleanup is restricted to marked owned files and rejects aliases overlapping runtime or recovery.
+
+Raw `.ansi` output uses a bounded asynchronous writer: 1 MiB queued per session with up to 512 KiB batches. Defaults are recording enabled, 30 days, 5 GiB total, 256 MiB per stream. Active files are preserved; exhaustion/failure stops capture and reports gaps without stopping PTYs. Global opt-out is applied before creating the first shell and overrides session resume. Live history is additionally capped at one million cells, excluding the capped live screen; this is not a bound on all process memory. There is no database/index or command replay.
+
+The focused native check (`python3 scripts/smoke_storage.py`) passes recording Save/backup updates, exact ANSI output, pause/resume without backfill, staging and reopening in a custom folder, and safe clearing in both folders. Original shell PID/environment, layouts, history and independent recovery survive. Core tests also cover failed writes, retention/stream limits, overlapping paths, invalid locators and first-byte opt-out. The search test waits for final PTY output as well as child exit; the color test waits for a computed output marker rather than echoed input. Both avoid timing races. [Settings screenshot](screenshots/prototype-storage-settings-linux.png).

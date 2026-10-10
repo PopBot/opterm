@@ -218,6 +218,8 @@ pub struct Session {
     pub generation: Arc<AtomicU64>,
     wake: Wake,
     theme: Arc<Mutex<Theme>>,
+    recorder: Option<crate::history::Recorder>,
+    history_options: Mutex<crate::history::Options>,
 }
 impl Session {
     pub fn spawn(program: &[String], wake: impl Fn() + Send + Sync + 'static) -> Result<Self> {
@@ -227,6 +229,25 @@ impl Session {
         launch: &Launch,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self> {
+        Self::spawn_inner(launch, None, crate::history::Options::default(), wake)
+    }
+    pub fn spawn_with_history(
+        launch: &Launch,
+        history: std::path::PathBuf,
+        options: crate::history::Options,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Self> {
+        Self::spawn_inner(launch, Some(history), options, wake)
+    }
+    fn spawn_inner(
+        launch: &Launch,
+        history: Option<std::path::PathBuf>,
+        history_options: crate::history::Options,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Self> {
+        history_options.validate()?;
+        let recorder = history
+            .map(|directory| crate::history::Recorder::new(directory, history_options.clone()));
         let directory = launch.directory()?;
         let program = launch.program();
         let size = PtySize {
@@ -276,7 +297,7 @@ impl Session {
         };
         let terminal = Arc::new(Mutex::new(Term::new(
             Config {
-                scrolling_history: 10_000,
+                scrolling_history: history_options.lines(100),
                 osc52: Osc52::Disabled,
                 ..Config::default()
             },
@@ -304,6 +325,7 @@ impl Session {
                     }
                 }
             })?;
+        let read_recorder = recorder.clone();
         let term = terminal.clone();
         let read_status = status.clone();
         let read_theme = theme.clone();
@@ -319,6 +341,9 @@ impl Session {
                     match reader.read(&mut buffer) {
                         Ok(0) => break,
                         Ok(count) => {
+                            if let Some(recorder) = &read_recorder {
+                                recorder.record(&buffer[..count]);
+                            }
                             let replies = {
                                 let mut terminal = term.lock().unwrap();
                                 processor.advance(&mut *terminal, &buffer[..count]);
@@ -356,6 +381,9 @@ impl Session {
                         }
                     }
                 }
+                if let Some(recorder) = &read_recorder {
+                    recorder.finish();
+                }
             })?;
         let wait_status = status.clone();
         let changed = generation.clone();
@@ -383,7 +411,40 @@ impl Session {
             generation,
             wake,
             theme,
+            recorder,
+            history_options: Mutex::new(history_options),
         })
+    }
+
+    pub fn recording(&self) -> bool {
+        self.recorder
+            .as_ref()
+            .is_some_and(|recorder| recorder.enabled())
+    }
+    pub fn history_error(&self) -> Option<String> {
+        self.recorder.as_ref().and_then(|recorder| recorder.error())
+    }
+    pub fn set_recording(&self, enabled: bool) {
+        if let Some(recorder) = &self.recorder {
+            recorder.set_enabled(enabled);
+        }
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        (self.wake)();
+    }
+    pub fn configure_history(&self, options: crate::history::Options) {
+        if let Some(recorder) = &self.recorder {
+            recorder.configure(options.clone());
+        }
+        let mut term = self.terminal.lock().unwrap();
+        let history = options.lines(term.columns());
+        term.set_options(Config {
+            scrolling_history: history,
+            osc52: Osc52::Disabled,
+            ..Config::default()
+        });
+        *self.history_options.lock().unwrap() = options;
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        (self.wake)();
     }
 
     pub fn set_theme(&self, theme: Theme) {
@@ -438,7 +499,16 @@ impl Session {
             return Ok(());
         }
         self.master.resize(new).context("Resize native PTY")?;
-        self.terminal.lock().unwrap().resize(Size { cols, rows });
+        {
+            let mut term = self.terminal.lock().unwrap();
+            let history = self.history_options.lock().unwrap().lines(cols as usize);
+            term.set_options(Config {
+                scrolling_history: history,
+                osc52: Osc52::Disabled,
+                ..Config::default()
+            });
+            term.resize(Size { cols, rows });
+        }
         *self.size.lock().unwrap() = new;
         self.generation.fetch_add(1, Ordering::Relaxed);
         (self.wake)();

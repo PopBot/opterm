@@ -38,6 +38,10 @@ pub struct Info {
     pub controlled: bool,
     #[serde(default)]
     pub profile: Option<ProfileTag>,
+    #[serde(default)]
+    pub recording: bool,
+    #[serde(default)]
+    pub history_error: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 pub struct Snapshot {
@@ -53,6 +57,11 @@ pub enum Request {
     Create(Vec<String>),
     CreateProfile(Box<Launch>),
     Themes(Vec<Theme>),
+    ConfigHistory(crate::history::Options),
+    Recording {
+        id: u64,
+        enabled: bool,
+    },
     Attach(u64),
     Detach(u64),
     TakeControl(u64),
@@ -108,6 +117,8 @@ pub enum Reply {
         profiles: bool,
         #[serde(default)]
         search: bool,
+        #[serde(default)]
+        history: bool,
         #[serde(default)]
         instance: String,
     },
@@ -200,6 +211,7 @@ pub struct Connection {
     stream: LocalSocketStream,
     pub profiles: bool,
     pub search_supported: bool,
+    pub history_supported: bool,
     pub instance: String,
 }
 impl Connection {
@@ -209,6 +221,7 @@ impl Connection {
             stream: LocalSocketStream::connect(endpoint(&path)?)?,
             profiles: false,
             search_supported: false,
+            history_supported: false,
             instance: String::new(),
         };
         match connection.call(Request::Hello(VERSION))? {
@@ -216,11 +229,13 @@ impl Connection {
                 version: VERSION,
                 profiles,
                 search,
+                history,
                 instance,
                 ..
             } => {
                 connection.profiles = profiles;
                 connection.search_supported = search;
+                connection.history_supported = history;
                 connection.instance = instance;
                 Ok(connection)
             }
@@ -314,6 +329,8 @@ impl Managed {
             attached: !self.viewers.is_empty(),
             controlled: self.owner == Some(client),
             profile: self.profile.clone(),
+            recording: self.session.recording(),
+            history_error: self.session.history_error(),
         }
     }
     fn revision(&self) -> u64 {
@@ -346,6 +363,8 @@ impl Managed {
 }
 #[derive(Default)]
 struct Hub {
+    history_directory: PathBuf,
+    history_options: crate::history::Options,
     sessions: BTreeMap<u64, Managed>,
     next_id: u64,
     instance: String,
@@ -356,8 +375,13 @@ fn create(hub: &mut Hub, client: u64, launch: Launch, configured: bool) -> Resul
         hub.sessions.len() < MAX_SESSIONS,
         "128-session prototype limit reached. End unused sessions."
     );
-    let session = Session::spawn_configured(&launch, || {})
-        .with_context(|| format!("Launch profile {}", launch.profile.name))?;
+    let session = Session::spawn_with_history(
+        &launch,
+        hub.history_directory.clone(),
+        hub.history_options.clone(),
+        || {},
+    )
+    .with_context(|| format!("Launch profile {}", launch.profile.name))?;
     hub.next_id += 1;
     let id = hub.next_id;
     let managed = Managed {
@@ -382,6 +406,7 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
                 pid: std::process::id(),
                 profiles: true,
                 search: true,
+                history: true,
                 instance: hub.instance.clone(),
             });
         }
@@ -395,6 +420,14 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
         }
         Request::Create(program) => return create(hub, client, Launch::legacy(&program), false),
         Request::CreateProfile(launch) => return create(hub, client, *launch, true),
+        Request::ConfigHistory(options) => {
+            options.validate()?;
+            for managed in hub.sessions.values() {
+                managed.session.configure_history(options.clone());
+            }
+            hub.history_options = options;
+            return Ok(Reply::Done);
+        }
         Request::Themes(themes) => {
             ensure!(themes.len() <= 66, "Too many terminal themes");
             for theme in &themes {
@@ -437,7 +470,8 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
         | Request::Resize { id, .. }
         | Request::Scroll { id, .. }
         | Request::Select { id, .. }
-        | Request::Search { id, .. } => *id,
+        | Request::Search { id, .. }
+        | Request::Recording { id, .. } => *id,
         _ => unreachable!(),
     };
     let managed = hub
@@ -511,6 +545,10 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
             managed.require_control(client)?;
             managed.session.scroll(lines);
         }
+        Request::Recording { enabled, .. } => {
+            managed.require_control(client)?;
+            managed.session.set_recording(enabled);
+        }
         Request::Search {
             id,
             query,
@@ -570,6 +608,7 @@ pub fn serve(path: &Path) -> Result<()> {
     let listener = options.create_sync()?;
     let hub = Arc::new(Mutex::new(Hub {
         instance: crate::profiles::fresh_id("service")?,
+        history_directory: path.join("history"),
         ..Hub::default()
     }));
     let next_client = AtomicU64::new(1);
@@ -600,6 +639,7 @@ pub fn serve(path: &Path) -> Result<()> {
                     pid: std::process::id(),
                     profiles: true,
                     search: true,
+                    history: true,
                     instance,
                 },
             )

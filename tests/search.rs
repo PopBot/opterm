@@ -31,7 +31,10 @@ fn wait_for(session: &Session, predicate: impl Fn(&Screen) -> bool) -> Screen {
 fn literal_search_visits_offscreen_matches_in_both_directions_and_wraps() {
     let script = "printf 'TOP a+b[0] λ\\r\\n'; i=0; while [ $i -lt 120 ]; do if [ $i -eq 40 ]; then printf 'MID a+b[0] λ\\r\\n'; elif [ $i -eq 80 ]; then printf 'BOTTOM a+b[0] λ\\r\\n'; else printf 'filler %s\\r\\n' $i; fi; i=$((i+1)); done";
     let session = Session::spawn(&["/bin/sh".into(), "-c".into(), script.into()], || {}).unwrap();
-    wait_for(&session, |screen| screen.exited);
+    // Child exit can precede the reader draining the final PTY output.
+    wait_for(&session, |screen| {
+        screen.exited && screen.text().contains("filler 119")
+    });
     assert!(!session.screen().text().contains("a+b"));
     let query = "a+b[0] λ";
     for (backwards, reset, label) in [
