@@ -4,7 +4,7 @@ Open **… → Settings… → Profiles**. The compact section has two views: **
 
 ## Profiles
 
-Add, duplicate, rename, edit, or delete a preset. Use **Use as default** to choose the preset for new tabs, splits, and windows. The built-in **Shell** is a protected fallback; duplicate it to customize it.
+Add, duplicate, rename, edit, or delete a preset. Use **Use as default** to choose the preset for new tabs, splits, and windows. The built-in **Shell** is a protected fallback; duplicate it to customize its launch. Its caret settings can be edited directly.
 
 Each profile has a name, executable, argument list, starting folder, environment overrides, and terminal theme. A blank executable uses the default system shell. Each argument row is one argument, preserving spaces; arguments are passed directly to the executable and are not parsed as a shell command. Use an explicit shell executable and `-c`/equivalent if shell interpretation is desired.
 
@@ -13,6 +13,10 @@ Starting folders use **profile folder → workspace folder → home**. Paths mus
 Ordinary **+**, New tab, split shortcuts, and New window use the default preset. Right-click **+** to choose a profile, or use **… → New tab with profile / Split right with profile / Split below with profile**.
 
 A session captures its profile name, launch configuration, and chosen theme ID. Editing a profile affects future launches. Existing shells keep their executable, arguments, folder, environment, and selected theme. A recognized running CLI supplies the automatic provider label; otherwise program-supplied titles take precedence over the captured profile name. Manual tab names still win. Deleting a profile does not stop its processes. Deleting the default preset reverts to built-in Shell and explains the change.
+
+**Caret shape** offers Block, Line, Outline, Underline, or Appearance default. **Blinking caret** toggles a half-second visible/hidden cycle. Save applies these choices to existing views of that profile without restarting their programs. Typing or moving the cursor makes it visible again. Blinking defaults off, and profiles without a shape override retain the global Appearance choice. Running sessions whose profile is deleted retain their captured caret preferences.
+
+On Unix, a plain click in tracked Bash, Zsh, or Fish input moves the caret using that shell's normal arrow-key protocol, including soft-wrapped rows and wide characters. Dragging still selects text; Shift-click keeps selection behavior. Prompt text, other output, scrollback, canonical/password reads, and read-only views do not send movement keys. Applications that enable terminal mouse reporting continue to receive their own clicks. Click editing requires the current service; an older service retains selection. Explicit multiline input, tabs, unusual line-editor keymaps, and non-reporting application editors are outside this development slice. Windows shell click editing is not implemented; native macOS behavior remains unverified.
 
 ## AI profiles and automatic recognition
 
@@ -28,7 +32,7 @@ Version-1/2 settings gain the presets once when migrated in memory. Save persist
 
 ## Themes
 
-Neutral **Dark** and **Light** are built in. Duplicate either, or add a custom theme, then edit foreground, background, cursor, selection, and the 16 ANSI colors. Choose the theme in a profile. Fonts, spacing, cursor shape, and app chrome remain global.
+Neutral **Dark** and **Light** are built in. Duplicate either, or add a custom theme, then edit foreground, background, cursor, selection, and the 16 ANSI colors. Choose the theme in a profile. Fonts, spacing, and app chrome remain global; profiles may override the global cursor shape.
 
 Saving a theme edit updates sessions using that theme, including service-owned detached sessions, without restarting work. Ordinary named colors and ANSI palette entries use the profile theme. Explicit program RGB colors, indexed colors 16–255, and program OSC color overrides retain their meaning. Default background/cursor and color-query replies respect program overrides. A deleted theme falls back to Dark for profiles and live sessions; running programs continue.
 
@@ -54,7 +58,13 @@ arguments = []
 directory = "~/Dev"
 theme = "dark"
 environment = []
+
+[profiles.caret]
+shape = "block" # "bar" is the Line option in the UI
+blink = true
 ```
+
+Built-in Shell uses a separate `[shell_caret]` table with the same fields. These optional fields load with existing version-3 files and participate in the same recovery backup.
 
 The UI generates stable random IDs; renaming does not change references. Built-in IDs `shell`, `dark`, and `light` are reserved. Profile/theme names must be unique, and IDs may not repeat. Configuration remains bounded to 64 KiB, with up to 64 custom profiles/themes, arguments per profile, and environment overrides per profile. Invalid edits never replace a good backup.
 
@@ -82,3 +92,5 @@ The Linux X11 GUI check creates and saves a default profile through the native c
 macOS, Windows, Wayland, authenticated interactive agent behavior, IME/accessibility, and comparative performance remain unverified. This slice adds no database, saved transcript index, or process replay.
 
 Provider recognition is covered by isolated Linux PTY/service fixtures for all four CLIs: immediate title emission, foreground launch/exit, background exclusion, detach/reattach, and manual naming. The focused `python3 scripts/smoke_gui.py --providers-only` check covers native labels/logos, shell-title restoration, restored manual naming, settings presets, and saved theme identity. These fixtures do not prove authenticated behavior of each real provider or native macOS/Windows recognition.
+
+The focused `python3 scripts/smoke_gui.py --caret-only` Linux X11 check verifies real Bash click insertion, blinking block frames, and saving a steady line caret through Profiles without replacing the shell PID. Real PTY tests cover movement in both directions, prompt/output and stale-view rejection, soft wrapping with scrolling, wide and combining characters; service checks reject observers and stale controllers. Caret settings round-trip through TOML and recovery. Other shells and native macOS/Windows caret rendering remain unverified.

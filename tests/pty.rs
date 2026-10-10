@@ -23,6 +23,104 @@ fn wait_for(session: &Session, predicate: impl Fn(&Screen) -> bool) -> Screen {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn clicks_edit_real_readline_input_and_leave_prompt_output_and_stale_views_alone() {
+    use opterm::profiles::{Environment, Launch};
+    let mut launch = Launch::legacy(&[
+        "/bin/bash".into(),
+        "--noprofile".into(),
+        "--norc".into(),
+        "-i".into(),
+    ]);
+    launch.profile.environment = vec![
+        Environment {
+            name: "PS1".into(),
+            value: "edit> ".into(),
+            secret: false,
+        },
+        Environment {
+            name: "LC_ALL".into(),
+            value: "C.UTF-8".into(),
+            secret: false,
+        },
+    ];
+    let session = Session::spawn_configured(&launch, || {}).unwrap();
+    wait_for(&session, |s| s.text().contains("edit> "));
+    session.write(b"printf 'RESULT:%s\\n' abcdef").unwrap();
+    let screen = wait_for(&session, |s| s.text().contains("abcdef"));
+    let (row, col) = screen.cursor.unwrap();
+    for (target_row, target_col, expected) in [
+        (row + 1, col - 3, screen.cursor),
+        (row, 1, screen.cursor),
+        (row, col - 3, Some((row, col - 1))),
+    ] {
+        session
+            .click_edit(target_row, target_col, expected)
+            .unwrap();
+        thread::sleep(Duration::from_millis(30));
+        assert_eq!(session.screen().cursor, screen.cursor);
+    }
+    session.click_edit(row, col - 3, screen.cursor).unwrap();
+    wait_for(&session, |s| s.cursor == Some((row, col - 3)));
+    session.write(b"X").unwrap();
+    let moved = wait_for(&session, |s| s.text().contains("abcXdef"));
+    // Move back to the end by clicking, then insert again and execute.
+    session.click_edit(row, col + 1, moved.cursor).unwrap();
+    wait_for(&session, |s| s.cursor == Some((row, col + 1)));
+    session.write(b"Y\r").unwrap();
+    wait_for(&session, |s| s.text().contains("RESULT:abcXdefY"));
+    wait_for(&session, |s| {
+        s.cursor.is_some_and(|(r, c)| r > row && c == 6)
+    });
+    session
+        .write("printf 'WIDE:%s\\n' a界bc".as_bytes())
+        .unwrap();
+    let screen = wait_for(&session, |s| s.text().contains("a界bc"));
+    let (row, col) = screen.cursor.unwrap();
+    // The second display cell of 界 still targets its character boundary.
+    session.click_edit(row, col - 3, screen.cursor).unwrap();
+    wait_for(&session, |s| s.cursor == Some((row, col - 4)));
+    session.write(b"X\x1b[F\r").unwrap();
+    wait_for(&session, |s| s.text().contains("WIDE:aX界bc"));
+    wait_for(&session, |s| s.cursor.is_some_and(|(_, c)| c == 6));
+    session
+        .write("printf 'COMBINING:%s\\n' ae\u{301}bc".as_bytes())
+        .unwrap();
+    let screen = wait_for(&session, |s| s.text().contains("ae\u{301}bc"));
+    let (row, col) = screen.cursor.unwrap();
+    session.click_edit(row, col - 3, screen.cursor).unwrap();
+    wait_for(&session, |s| s.cursor == Some((row, col - 3)));
+    session.write(b"X\x1b[F\r").unwrap();
+    wait_for(&session, |s| s.text().contains("COMBINING:aXe\u{301}bc"));
+    session.resize(32, 4, 8.0, 17.0).unwrap();
+    session
+        .write(b"printf '\\033[2J\\033[H\\n\\n\\n'\r")
+        .unwrap();
+    wait_for(&session, |s| s.cursor == Some((3, 6)));
+    let prefix = "printf 'WRAPPED:%s\\n' ";
+    let value = "abcdef0123456789012345678901234567890123456789";
+    session
+        .write(format!("{prefix}{value}").as_bytes())
+        .unwrap();
+    let screen = wait_for(&session, |s| s.text().replace('\n', "").contains(value));
+    let (row, _) = screen.cursor.unwrap();
+    let prompt_row = screen
+        .cells
+        .windows(5)
+        .rev()
+        .find(|cells| cells.iter().map(|c| c.text.as_str()).collect::<String>() == "edit>")
+        .unwrap()[0]
+        .row;
+    let target_row = row - 1;
+    let insertion = target_row * 32 + 2 - (prompt_row * 32 + 6 + prefix.len());
+    session.click_edit(target_row, 2, screen.cursor).unwrap();
+    wait_for(&session, |s| s.cursor == Some((target_row, 2)));
+    session.write(b"X\x1b[F\r").unwrap();
+    let expected = format!("WRAPPED:{}X{}", &value[..insertion], &value[insertion..]);
+    wait_for(&session, |s| s.text().replace('\n', "").contains(&expected));
+}
+
+#[test]
 fn native_shell_title_color_and_resize() {
     let session = Session::spawn(&["/bin/sh".into(), "-c".into(),
         "stty -echo; printf 'READY\\n'; read line; stty size; printf '\\033]0;PTY fixture\\007\\033[31mRED\\033[0m\\n'; printf 'DONE\\n'".into()], || {}).unwrap();

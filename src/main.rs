@@ -163,6 +163,8 @@ struct App {
     window_poll: Instant,
     ime: ime::Composition,
     window_title: String,
+    caret_activity: BTreeMap<u64, (Option<(usize, usize)>, Instant)>,
+    click_edit: Option<(u64, usize, usize)>,
 }
 
 fn install_font(ctx: &egui::Context, database: &fontdb::Database, family: &str) -> bool {
@@ -284,6 +286,8 @@ impl App {
                 egui::IMEPurpose::Terminal,
             ));
         let mut app = Self {
+            caret_activity: BTreeMap::new(),
+            click_edit: None,
             tabs: Vec::new(),
             client: None,
             panes: BTreeMap::new(),
@@ -656,6 +660,7 @@ impl App {
             .chain(self.missing.keys().copied())
             .collect();
         self.panes.retain(|id, _| views.contains(id));
+        self.caret_activity.retain(|id, _| views.contains(id));
         for &id in &views {
             self.panes.entry(id).or_insert_with(|| client.session(id));
         }
@@ -1411,10 +1416,19 @@ impl App {
             && let Some(pos) = response.interact_pointer_pos()
         {
             let (row, col) = point(pos);
-            if session.controlled()
-                && let Err(error) = session.select(row, col, true)
-            {
-                self.error = Some(format!("{error:#}"));
+            if session.controlled() {
+                let result = if ctx.input(|i| i.modifiers.is_none())
+                    && !response.double_clicked()
+                    && !response.triple_clicked()
+                {
+                    self.click_edit = Some((id, row, col));
+                    Ok(())
+                } else {
+                    session.select(row, col, true)
+                };
+                if let Err(error) = result {
+                    self.error = Some(format!("{error:#}"));
+                }
             }
         }
         if local_selection && response.drag_stopped() && self.settings.current.copy_on_select {
@@ -1422,6 +1436,34 @@ impl App {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         let screen = session.screen();
+        let caret = session
+            .info()
+            .and_then(|info| info.profile)
+            .map(|profile| {
+                self.settings
+                    .current
+                    .profile(&profile.id)
+                    .map(|p| p.caret)
+                    .unwrap_or(profile.caret)
+            })
+            .unwrap_or(self.settings.current.shell_caret);
+        let activity = self
+            .caret_activity
+            .entry(id)
+            .or_insert((screen.cursor, Instant::now()));
+        if activity.0 != screen.cursor {
+            *activity = (screen.cursor, Instant::now());
+        }
+        let blink_phase = activity.1.elapsed().as_millis() % 1000;
+        let caret_visible = !caret.blink || blink_phase < 500 || self.ime.text(id).is_some();
+        if caret.blink
+            && focused
+            && ctx.input(|i| i.focused)
+            && screen.cursor.is_some()
+            && !screen.exited
+        {
+            ctx.request_repaint_after(Duration::from_millis(500 - (blink_phase % 500) as u64));
+        }
         let bg = Color32::from_rgb(
             screen.background[0],
             screen.background[1],
@@ -1495,27 +1537,55 @@ impl App {
                     );
                 }
             }
-            match appearance.cursor {
-                Cursor::Outline => {
-                    painter.rect_stroke(
-                        cursor_rect,
-                        0,
-                        (1.0, cursor_color),
-                        egui::StrokeKind::Inside,
-                    );
-                }
-                Cursor::Bar => {
-                    painter.rect_filled(
-                        Rect::from_min_size(pos, Vec2::new(2.0, height)),
-                        0,
-                        cursor_color,
-                    );
-                }
-                Cursor::Underline => {
-                    painter.line_segment(
-                        [cursor_rect.left_bottom(), cursor_rect.right_bottom()],
-                        (2.0, cursor_color),
-                    );
+            if caret_visible {
+                match if self.ime.text(id).is_some() {
+                    Cursor::Bar
+                } else {
+                    caret.shape.unwrap_or(appearance.cursor)
+                } {
+                    Cursor::Block => {
+                        let cell = screen
+                            .cells
+                            .iter()
+                            .find(|cell| cell.row == row && cell.col == col);
+                        let block = Rect::from_min_size(
+                            pos,
+                            Vec2::new(
+                                width
+                                    * if cell.is_some_and(|c| c.wide) {
+                                        2.0
+                                    } else {
+                                        1.0
+                                    },
+                                height,
+                            ),
+                        );
+                        painter.rect_filled(block, 0, cursor_color);
+                        if let Some(cell) = cell {
+                            painter.text(pos, Align2::LEFT_TOP, &cell.text, font.clone(), bg);
+                        }
+                    }
+                    Cursor::Outline => {
+                        painter.rect_stroke(
+                            cursor_rect,
+                            0,
+                            (1.0, cursor_color),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    Cursor::Bar => {
+                        painter.rect_filled(
+                            Rect::from_min_size(pos, Vec2::new(2.0, height)),
+                            0,
+                            cursor_color,
+                        );
+                    }
+                    Cursor::Underline => {
+                        painter.line_segment(
+                            [cursor_rect.left_bottom(), cursor_rect.right_bottom()],
+                            (2.0, cursor_color),
+                        );
+                    }
                 }
             }
         }
@@ -1996,6 +2066,7 @@ impl App {
     }
 
     fn events(&mut self, ctx: &egui::Context) {
+        let mut click_edit = self.click_edit.take();
         let focus = self
             .focused_session()
             .filter(|session| session.controlled())
@@ -2158,6 +2229,23 @@ impl App {
             if matches!(&event, egui::Event::PointerButton { pressed: false, .. }) {
                 self.mouse_button = None;
             }
+            if matches!(
+                &event,
+                egui::Event::PointerButton {
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    ..
+                }
+            ) && let Some((id, row, col)) = click_edit.take()
+            {
+                if let Err(error) = client.session(id).click_edit(row, col) {
+                    self.error = Some(format!("{error:#}"));
+                }
+                if let Some(activity) = self.caret_activity.get_mut(&id) {
+                    activity.1 = Instant::now();
+                }
+                continue;
+            }
             let Some(id) = self
                 .tabs
                 .get(self.active)
@@ -2167,6 +2255,15 @@ impl App {
                 continue;
             };
             let session = client.session(id);
+            if matches!(
+                &event,
+                egui::Event::Text(_)
+                    | egui::Event::Paste(_)
+                    | egui::Event::Key { pressed: true, .. }
+            ) && let Some(activity) = self.caret_activity.get_mut(&id)
+            {
+                activity.1 = Instant::now();
+            }
             let result = (|| -> anyhow::Result<()> {
                 match event {
                     egui::Event::Copy => {

@@ -104,14 +104,23 @@ def main():
     env = None
     controls_only = '--controls-only' in sys.argv
     providers_only = '--providers-only' in sys.argv
-    arguments = [arg for arg in sys.argv[1:] if arg not in ('--controls-only', '--providers-only')]
+    caret_only = '--caret-only' in sys.argv
+    arguments = [arg for arg in sys.argv[1:] if arg not in ('--controls-only', '--providers-only', '--caret-only')]
     binary = Path(arguments[0]).resolve() if arguments else TARGET / 'debug/opterm'
     try:
         display = ':' + server.stdout.readline().decode().strip()
         env = {**os.environ, 'DISPLAY': display, 'LIBGL_ALWAYS_SOFTWARE': '1', 'WINIT_UNIX_BACKEND': 'x11', 'OPTERM_STATE_DIR': state.name + '/runtime', 'OPTERM_CONFIG_DIR': state.name + '/settings', 'OPTERM_RECOVERY_DIR': state.name + '/recovery'}
         if providers_only:
             env['SHELL'] = '/bin/sh'  # Avoid personal prompt hooks overwriting fixture titles.
-        app = subprocess.Popen([str(binary), '--', '/bin/sh'], cwd=ROOT, env=env)
+        program = ['/bin/sh']
+        if caret_only:
+            env.update(SHELL='/bin/bash', PS1='edit> ')
+            config = Path(env['OPTERM_CONFIG_DIR']) / 'settings.toml'
+            config.parent.mkdir(parents=True, mode=0o700)
+            config.write_text('version = 3\n[shell_caret]\nshape = "block"\nblink = true\n')
+            config.chmod(0o600)
+            program = ['/bin/bash', '--noprofile', '--norc', '-i']
+        app = subprocess.Popen([str(binary), '--', *program], cwd=ROOT, env=env)
         dpy = wait_until(lambda: X.XOpenDisplay(display.encode()))
         root = X.XDefaultRootWindow(dpy)
         def find_windows(prefix="Opterm"):
@@ -192,6 +201,86 @@ def main():
             type_text(command + " > '" + str(path) + "'\n")
             wait_until(lambda: path.exists() and path.stat().st_size > 0)
             return path.read_text().strip()
+
+        if caret_only:
+            X.XMoveWindow(dpy, window, 0, 0); X.XResizeWindow(dpy, window, 1000, 680)
+            X.XFlush(dpy); time.sleep(0.4)
+            before_pid = command_file("printf '%s' $$", 'caret-pid')
+            # Observe only our fixture session through the existing private IPC.
+            with socket.socket(socket.AF_UNIX) as observer:
+                observer.connect(str(Path(env['OPTERM_STATE_DIR']) / 'service.sock'))
+                def call(value):
+                    body = json.dumps(value).encode()
+                    observer.sendall(struct.pack('<I', len(body)) + body)
+                    def receive(count):
+                        data = b''
+                        while len(data) < count:
+                            part = observer.recv(count - len(data))
+                            assert part, 'Service closed observer connection'
+                            data += part
+                        return data
+                    return json.loads(receive(struct.unpack('<I', receive(4))[0]))
+                assert call({'Hello': 1})['Hello']['click_edit']
+                session_id = call('List')['List'][0]['id']
+                call({'Attach': session_id})
+                def screen():
+                    return call({'View': {'id': session_id, 'since': None}})['Snapshot']['screen']
+                type_text("printf '\\033[2J\\033[H'\n")
+                wait_until(lambda: screen()['cursor'] == [0, 6])
+                result = Path(state.name) / 'clicked-result'
+                command = "printf '%s' abcdef > '" + str(result) + "'"
+                type_text(command)
+                wait_until(lambda: screen()['cursor'] == [0, 6 + len(command)])
+                # Default DejaVu Sans Mono: 14 px, 8.43 px cells, 6 px padding.
+                column = 6 + command.index('abcdef') + 3
+                click(round(6 + (column + 0.3) * 8.43), 43)
+                wait_until(lambda: screen()['cursor'] == [0, column])
+                type_text('X\n')
+                wait_until(result.exists)
+                assert result.read_text() == 'abcXdef', result.read_text()
+                print('Native click positions the Bash caret and inserts in the selected text: passed')
+                type_text("printf '\\033[2J\\033[H'\n")
+                wait_until(lambda: screen()['cursor'] == [0, 6])
+                XT.XTestFakeMotionEvent(dpy, -1, 900, 650, 0); X.XFlush(dpy)
+                def frames():
+                    samples = []
+                    for _ in range(10):
+                        data = subprocess.check_output(['xwd', '-display', display, '-root', '-silent'])
+                        header = struct.unpack('>25I', data[:100])
+                        samples.append(data[header[0] + header[19] * 12:])
+                        time.sleep(0.12)
+                    return samples
+                assert len(set(frames())) == 2, 'Enabled caret did not alternate visible/hidden frames'
+                print('Native blinking block caret: passed')
+                shortcut(ord(','))
+                settings_window = wait_until(lambda: next(iter(find_windows('Opterm Settings')), None))
+                X.XMoveWindow(dpy, settings_window, 0, 0); X.XMapWindow(dpy, settings_window)
+                X.XSetInputFocus(dpy, settings_window, 1, 0); X.XFlush(dpy); time.sleep(0.4)
+                click(285, 22)
+                print('Caret settings screenshot:', screenshot(display, 'prototype-caret-settings-linux.png'))
+                # Profile controls follow the disabled built-in launch form.
+                XT.XTestFakeMotionEvent(dpy, -1, 400, 320, 0)
+                for _ in range(4):
+                    XT.XTestFakeButtonEvent(dpy, 5, 1, 0); XT.XTestFakeButtonEvent(dpy, 5, 0, 0)
+                X.XFlush(dpy); time.sleep(0.4)
+                print('Scrolled caret settings screenshot:', screenshot(display, 'prototype-caret-scrolled-linux.png'))
+                click(140, 317); click(120, 380)  # Line.
+                click(205, 317)  # Disable blinking.
+                time.sleep(0.5)
+                XT.XTestFakeMotionEvent(dpy, -1, 35, 520, 0); X.XFlush(dpy); time.sleep(0.1)
+                XT.XTestFakeButtonEvent(dpy, 1, 1, 0); X.XFlush(dpy); time.sleep(0.1)
+                XT.XTestFakeButtonEvent(dpy, 1, 0, 0); X.XFlush(dpy); time.sleep(0.3)
+                X.XSetInputFocus(dpy, window, 1, 0); X.XFlush(dpy)
+                wait_until(lambda: not find_windows('Opterm Settings'))
+                saved = tomllib.loads(config.read_text())
+                assert saved['shell_caret'] == {'shape': 'bar', 'blink': False}, saved['shell_caret']
+                X.XSetInputFocus(dpy, window, 1, 0); X.XFlush(dpy); time.sleep(0.5)
+                XT.XTestFakeMotionEvent(dpy, -1, 900, 650, 0); X.XFlush(dpy)
+                assert len(set(frames())) == 1, 'Disabled caret still blinked'
+                assert command_file("printf '%s' $$", 'caret-retained-pid') == before_pid
+                print('Native profile Save changes block to steady line without restarting the shell: passed')
+                print('Steady line caret screenshot:', screenshot(display, 'prototype-caret-line-linux.png'))
+                return
 
         if providers_only:
             X.XMoveWindow(dpy, window, 0, 0); X.XResizeWindow(dpy, window, 1000, 680)

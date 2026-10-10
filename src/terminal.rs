@@ -13,7 +13,7 @@ use crate::profiles::{Launch, Theme};
 use alacritty_terminal::{
     event::{Event, EventListener, WindowSize},
     grid::{Dimensions, Scroll},
-    index::{Boundary, Column, Direction, Point, Side},
+    index::{Boundary, Column, Direction, Line, Point, Side},
     selection::{Selection, SelectionType},
     term::{Config, Osc52, Term, TermMode, cell::Flags, search::RegexSearch, viewport_to_point},
     vte::ansi::{Color, Processor, Rgb},
@@ -265,6 +265,23 @@ pub struct Session {
     recorder: Option<crate::history::Recorder>,
     history_options: Mutex<crate::history::Options>,
     process_id: Option<u32>,
+    shell_editor: bool,
+    input_start: Mutex<Option<InputStart>>,
+}
+struct InputStart {
+    column: usize,
+    prompt_wraps: usize,
+    prefix: Vec<char>,
+}
+fn wrapped_start(term: &Term<Listener>, mut line: Line) -> Line {
+    while line > term.grid().topmost_line()
+        && term.grid()[line - 1usize][Column(term.columns() - 1)]
+            .flags
+            .contains(Flags::WRAPLINE)
+    {
+        line -= 1;
+    }
+    line
 }
 impl Session {
     pub fn spawn(program: &[String], wake: impl Fn() + Send + Sync + 'static) -> Result<Self> {
@@ -321,6 +338,19 @@ impl Session {
         for env in &launch.profile.environment {
             command.env(&env.name, &env.value);
         }
+        #[cfg(unix)]
+        let shell_editor = {
+            let executable = program
+                .first()
+                .cloned()
+                .unwrap_or_else(|| command.get_shell());
+            std::path::Path::new(&executable)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| matches!(name, "bash" | "zsh" | "fish"))
+        };
+        #[cfg(not(unix))]
+        let shell_editor = false;
         #[cfg(windows)]
         {
             // Console launchers and CREATE_NEW_PROCESS_GROUP can leave an
@@ -487,6 +517,8 @@ impl Session {
             recorder,
             history_options: Mutex::new(history_options),
             process_id,
+            shell_editor,
+            input_start: Mutex::new(None),
         })
     }
 
@@ -535,7 +567,27 @@ impl Session {
             bytes.len() <= 1024 * 1024,
             "Input exceeds the 1 MiB prototype limit"
         );
-        self.terminal.lock().unwrap().scroll_display(Scroll::Bottom);
+        let editing = self.shell_is_editing();
+        {
+            let mut term = self.terminal.lock().unwrap();
+            let mut start = self.input_start.lock().unwrap();
+            if !editing
+                || (!bytes.starts_with(b"\x1b[200~")
+                    && bytes.iter().any(|b| matches!(b, b'\r' | b'\n' | 3)))
+            {
+                *start = None;
+            } else if start.is_none() && !bytes.is_empty() {
+                let cursor = term.grid().cursor.point;
+                *start = Some(InputStart {
+                    column: cursor.column.0,
+                    prompt_wraps: (cursor.line - wrapped_start(&term, cursor.line)).0 as usize,
+                    prefix: (0..cursor.column.0)
+                        .map(|col| term.grid()[cursor.line][Column(col)].c)
+                        .collect(),
+                });
+            }
+            term.scroll_display(Scroll::Bottom);
+        }
         self.generation.fetch_add(1, Ordering::Relaxed);
         self.writer
             .try_send(bytes.to_vec())
@@ -575,6 +627,7 @@ impl Session {
         self.master.resize(new).context("Resize native PTY")?;
         {
             let mut term = self.terminal.lock().unwrap();
+            *self.input_start.lock().unwrap() = None;
             let history = self.history_options.lock().unwrap().lines(cols as usize);
             term.set_options(Config {
                 scrolling_history: history,
@@ -614,6 +667,160 @@ impl Session {
         }
         self.generation.fetch_add(1, Ordering::Relaxed);
         (self.wake)();
+    }
+
+    fn shell_is_editing(&self) -> bool {
+        if !self.shell_editor || self.exited() {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            let Some(fd) = self.master.as_raw_fd() else {
+                return false;
+            };
+            let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
+            // SAFETY: the master owns fd, and tcgetattr initializes attributes on success.
+            if unsafe { libc::tcgetattr(fd, attributes.as_mut_ptr()) } != 0 {
+                return false;
+            }
+            // SAFETY: tcgetattr succeeded above.
+            let attributes = unsafe { attributes.assume_init() };
+            // A shell line editor runs without canonical input/echo; foreground
+            // commands and password/canonical reads must never receive synthetic arrows.
+            attributes.c_lflag & (libc::ICANON | libc::ECHO) == 0
+                && self
+                    .master
+                    .process_group_leader()
+                    .and_then(|pid| u32::try_from(pid).ok())
+                    == self.process_id
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
+
+    /// Move within the active shell input line, including its wrapped rows.
+    /// The service checks its live grid so a stale desktop snapshot cannot move a different line.
+    pub fn click_edit(
+        &self,
+        row: usize,
+        col: usize,
+        expected: Option<(usize, usize)>,
+    ) -> Result<()> {
+        let editing = self.shell_is_editing();
+        let bytes = {
+            let mut term = self.terminal.lock().unwrap();
+            let start = self.input_start.lock().unwrap();
+            let cursor = term.grid().cursor.point;
+            let forbidden = TermMode::ALT_SCREEN
+                | TermMode::MOUSE_REPORT_CLICK
+                | TermMode::MOUSE_DRAG
+                | TermMode::MOUSE_MOTION;
+            if editing
+                && term.grid().display_offset() == 0
+                && !term.mode().intersects(forbidden)
+                && term.mode().contains(TermMode::SHOW_CURSOR)
+                && expected == Some((cursor.line.0 as usize, cursor.column.0))
+                && row < term.screen_lines()
+                && col < term.columns()
+                && let Some(start) = &*start
+            {
+                let first = wrapped_start(&term, cursor.line) + start.prompt_wraps;
+                let origin = Point::new(first, Column(start.column));
+                let mut last = cursor.line;
+                while last < term.bottommost_line()
+                    && term.grid()[last][Column(term.columns() - 1)]
+                        .flags
+                        .contains(Flags::WRAPLINE)
+                {
+                    last += 1;
+                }
+                let end_col = (0..term.columns())
+                    .rev()
+                    .find(|&c| {
+                        term.grid()[last][Column(c)].c != ' '
+                            || term.grid()[last][Column(c)]
+                                .flags
+                                .contains(Flags::WIDE_CHAR_SPACER)
+                    })
+                    .map(|c| c + 1)
+                    .unwrap_or(0);
+                let end = Point::new(last, Column(end_col)).max(cursor);
+                let target = Point::new(Line(row as i32), Column(col));
+                if first <= cursor.line
+                    && origin <= target
+                    && target <= end
+                    && start
+                        .prefix
+                        .iter()
+                        .enumerate()
+                        .all(|(col, c)| term.grid()[first][Column(col)].c == *c)
+                {
+                    let target = Point::new(
+                        target.line,
+                        Column(
+                            if term.grid()[target].flags.contains(Flags::WIDE_CHAR_SPACER) {
+                                col.saturating_sub(1)
+                            } else {
+                                col
+                            },
+                        ),
+                    );
+                    let (left, right) = if target < cursor {
+                        (target, cursor)
+                    } else {
+                        (cursor, target)
+                    };
+                    let left = left.line.0 as i64 * term.columns() as i64 + left.column.0 as i64;
+                    let right = right.line.0 as i64 * term.columns() as i64 + right.column.0 as i64;
+                    let mut count = 0;
+                    let mut tab = false;
+                    for offset in left..right {
+                        let point = Point::new(
+                            Line(offset.div_euclid(term.columns() as i64) as i32),
+                            Column(offset.rem_euclid(term.columns() as i64) as usize),
+                        );
+                        let cell = &term.grid()[point];
+                        tab |= cell.c == '\t';
+                        if !cell
+                            .flags
+                            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                        {
+                            count += 1;
+                        }
+                    }
+                    let suffix = if target < cursor { b'D' } else { b'C' };
+                    let prefix = if term.mode().contains(TermMode::APP_CURSOR) {
+                        b'O'
+                    } else {
+                        b'['
+                    };
+                    if tab {
+                        None
+                    } else {
+                        term.selection = None;
+                        Some([b'\x1b', prefix, suffix].repeat(count))
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        if let Some(bytes) = bytes {
+            if !bytes.is_empty() {
+                self.writer
+                    .try_send(bytes)
+                    .context("Queue click cursor movement")?;
+            }
+            self.generation.fetch_add(1, Ordering::Relaxed);
+            (self.wake)();
+        } else {
+            self.select(row, col, true);
+        }
+        Ok(())
     }
 
     /// Search only the terminal's bounded live grid; no transcript or index is built.

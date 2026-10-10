@@ -23,8 +23,31 @@ pub enum Chrome {
 pub enum Cursor {
     #[default]
     Outline,
+    Block,
     Bar,
     Underline,
+}
+impl Cursor {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Outline => "Outline",
+            Self::Block => "Block",
+            Self::Bar => "Line",
+            Self::Underline => "Underline",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Caret {
+    /// None preserves the existing global appearance preference.
+    pub shape: Option<Cursor>,
+    pub blink: bool,
+}
+impl Caret {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -55,6 +78,7 @@ impl Default for Appearance {
 pub struct Settings {
     pub version: u32,
     pub appearance: Appearance,
+    pub shell_caret: Caret,
     pub default_profile: String,
     pub workspace_directory: String,
     pub profiles: Vec<Profile>,
@@ -69,6 +93,7 @@ impl Default for Settings {
         Self {
             version: 3,
             appearance: Appearance::default(),
+            shell_caret: Caret::default(),
             default_profile: SHELL.into(),
             workspace_directory: String::new(),
             profiles: crate::agents::Provider::ALL
@@ -150,16 +175,20 @@ impl Settings {
     }
     pub fn profile(&self, id: &str) -> Option<Profile> {
         if id == SHELL {
-            Some(Profile::default())
+            Some(Profile {
+                caret: self.shell_caret,
+                ..Profile::default()
+            })
         } else {
             self.profiles.iter().find(|p| p.id == id).cloned()
         }
     }
     pub fn default_profile(&self) -> Profile {
-        self.profile(&self.default_profile).unwrap_or_default()
+        self.profile(&self.default_profile)
+            .unwrap_or_else(|| self.profile(SHELL).unwrap())
     }
     pub fn all_profiles(&self) -> Vec<Profile> {
-        std::iter::once(Profile::default())
+        std::iter::once(self.profile(SHELL).unwrap())
             .chain(self.profiles.clone())
             .collect()
     }

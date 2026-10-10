@@ -101,6 +101,12 @@ pub enum Request {
         col: usize,
         start: bool,
     },
+    ClickEdit {
+        id: u64,
+        row: usize,
+        col: usize,
+        cursor: Option<(usize, usize)>,
+    },
     Search {
         id: u64,
         query: String,
@@ -121,6 +127,8 @@ pub enum Reply {
         search: bool,
         #[serde(default)]
         history: bool,
+        #[serde(default)]
+        click_edit: bool,
         #[serde(default)]
         instance: String,
     },
@@ -214,6 +222,7 @@ pub struct Connection {
     pub profiles: bool,
     pub search_supported: bool,
     pub history_supported: bool,
+    pub click_edit_supported: bool,
     pub instance: String,
 }
 impl Connection {
@@ -224,6 +233,7 @@ impl Connection {
             profiles: false,
             search_supported: false,
             history_supported: false,
+            click_edit_supported: false,
             instance: String::new(),
         };
         match connection.call(Request::Hello(VERSION))? {
@@ -232,12 +242,14 @@ impl Connection {
                 profiles,
                 search,
                 history,
+                click_edit,
                 instance,
                 ..
             } => {
                 connection.profiles = profiles;
                 connection.search_supported = search;
                 connection.history_supported = history;
+                connection.click_edit_supported = click_edit;
                 connection.instance = instance;
                 Ok(connection)
             }
@@ -410,6 +422,7 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
                 version: VERSION,
                 pid: std::process::id(),
                 profiles: true,
+                click_edit: true,
                 search: true,
                 history: true,
                 instance: hub.instance.clone(),
@@ -475,6 +488,7 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
         | Request::Resize { id, .. }
         | Request::Scroll { id, .. }
         | Request::Select { id, .. }
+        | Request::ClickEdit { id, .. }
         | Request::Search { id, .. }
         | Request::Recording { id, .. } => *id,
         _ => unreachable!(),
@@ -570,6 +584,12 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
         } => {
             managed.require_control(client)?;
             managed.session.select(row, col, start);
+        }
+        Request::ClickEdit {
+            row, col, cursor, ..
+        } => {
+            managed.require_control(client)?;
+            managed.session.click_edit(row, col, cursor)?;
         }
         _ => unreachable!(),
     }
@@ -691,6 +711,7 @@ pub fn serve(path: &Path) -> Result<()> {
                     version: VERSION,
                     pid: std::process::id(),
                     profiles: true,
+                    click_edit: true,
                     search: true,
                     history: true,
                     instance,

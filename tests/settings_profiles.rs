@@ -46,6 +46,48 @@ fn configured() -> Settings {
     }
 }
 #[test]
+fn profile_carets_round_trip_and_keep_old_settings_compatible() {
+    use opterm::settings::{Caret, Cursor};
+    let mut settings = configured();
+    settings.shell_caret = Caret {
+        shape: Some(Cursor::Bar),
+        blink: true,
+    };
+    settings.profiles[0].caret = Caret {
+        shape: Some(Cursor::Block),
+        blink: false,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = store(&temp);
+    store
+        .save(&settings, &store.observed.clone(), false)
+        .unwrap();
+    assert_eq!(
+        Settings::parse(&settings.encode().unwrap()).unwrap(),
+        settings
+    );
+    assert_eq!(store.recovery().unwrap().shell_caret, settings.shell_caret);
+    assert_eq!(
+        store.recovery().unwrap().profiles[0].caret,
+        settings.profiles[0].caret
+    );
+    assert_eq!(
+        settings.launch("shell").unwrap().profile.caret,
+        settings.shell_caret
+    );
+    assert_eq!(settings.all_profiles()[0].caret, settings.shell_caret);
+    assert_eq!(
+        settings.launch("agent").unwrap().profile.tag().caret,
+        settings.profiles[0].caret
+    );
+    let old = Settings::parse(b"version = 3\n[appearance]\ncursor = 'bar'\n").unwrap();
+    assert_eq!(old.shell_caret, Caret::default());
+    assert_eq!(old.appearance.cursor, Cursor::Bar);
+    assert!(old.profiles.iter().all(|p| p.caret == Caret::default()));
+    settings.profiles.clear();
+    assert_eq!(settings.default_profile().caret, settings.shell_caret);
+}
+#[test]
 fn profiles_themes_and_recovery_omit_only_marked_secret_values() {
     let temp = tempfile::tempdir().unwrap();
     let mut store = store(&temp);

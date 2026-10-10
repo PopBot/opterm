@@ -152,6 +152,8 @@ pub struct Profile {
     pub environment: Vec<Environment>,
     pub theme: String,
     pub provider: Option<crate::agents::Provider>,
+    #[serde(skip_serializing_if = "crate::settings::Caret::is_default")]
+    pub caret: crate::settings::Caret,
 }
 impl Default for Profile {
     fn default() -> Self {
@@ -164,6 +166,7 @@ impl Default for Profile {
             environment: Vec::new(),
             theme: DARK.into(),
             provider: None,
+            caret: crate::settings::Caret::default(),
         }
     }
 }
@@ -229,6 +232,7 @@ impl Profile {
             name: self.name.clone(),
             theme: self.theme.clone(),
             provider: self.provider,
+            caret: self.caret,
         }
     }
 }
@@ -254,6 +258,8 @@ pub struct ProfileTag {
     pub theme: String,
     #[serde(default)]
     pub provider: Option<crate::agents::Provider>,
+    #[serde(default)]
+    pub caret: crate::settings::Caret,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Launch {

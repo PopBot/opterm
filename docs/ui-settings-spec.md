@@ -108,6 +108,8 @@ Q78 accepts 10,000 live scrollback lines per session initially, configurable. De
 
 Q63 accepts applying saved appearance/shortcut changes immediately. Program, starting-directory, and environment changes in launch profiles affect newly started sessions; current programs keep running. Theme edits update views using that theme without restarting work.
 
+2026-10-10 accepted correction: clicking editable terminal text moves the input caret to that position. Preserve drag selection and application mouse reporting. Each profile, including built-in Shell, has a blinking-caret toggle and a caret shape choice with Block and Line options. Saved caret changes apply immediately without restarting sessions; existing global cursor preferences remain the fallback for profiles without a shape override.
+
 ### Global-settings recovery — Q64 accepted with backup requirement
 
 Keep a validated last-good global-settings snapshot in the current user's app-data/state area, separate from the actively edited TOML file, with access limited to that user. The exact OS paths will be selected during implementation. Validate before updating the snapshot and use a safe temporary-file/replacement procedure that retains the prior good copy on a failed or interrupted write. Invalid edits must never replace the good backup. Report backup-write failures rather than implying recovery is available.

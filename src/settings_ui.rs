@@ -250,10 +250,15 @@ fn appearance(ui: &mut egui::Ui, a: &mut Appearance, fonts: &[String]) {
             }
             ui.label("Cursor");
             egui::ComboBox::from_id_salt("cursor")
-                .selected_text(format!("{:?}", a.cursor))
+                .selected_text(a.cursor.label())
                 .show_ui(ui, |ui| {
-                    for value in [Cursor::Outline, Cursor::Bar, Cursor::Underline] {
-                        ui.selectable_value(&mut a.cursor, value, format!("{value:?}"));
+                    for value in [
+                        Cursor::Outline,
+                        Cursor::Block,
+                        Cursor::Bar,
+                        Cursor::Underline,
+                    ] {
+                        ui.selectable_value(&mut a.cursor, value, value.label());
                     }
                 });
             ui.end_row();

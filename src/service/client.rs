@@ -78,6 +78,7 @@ pub struct Client {
     pub profiles: bool,
     pub search_supported: bool,
     pub history_supported: bool,
+    pub click_edit_supported: bool,
     pub instance: String,
 }
 impl Client {
@@ -121,7 +122,7 @@ impl Client {
     }
     pub fn open_with_history(
         path: &Path,
-        launch: Launch,
+        mut launch: Launch,
         force_new: bool,
         reconnect: Reconnect,
         create_if_empty: bool,
@@ -129,6 +130,9 @@ impl Client {
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Arc<Self>> {
         let mut connection = Connection::connect_or_start(path)?;
+        if !connection.click_edit_supported {
+            launch.profile.caret = Default::default();
+        }
         if let Some(history) = history.filter(|_| connection.history_supported) {
             history.validate()?;
             connection.call(Request::ConfigHistory(history.clone()))?;
@@ -185,6 +189,7 @@ impl Client {
         let profiles = connection.profiles;
         let search_supported = connection.search_supported;
         let history_supported = connection.history_supported;
+        let click_edit_supported = connection.click_edit_supported;
         let instance = connection.instance.clone();
         state.visible = state.views.iter().copied().collect();
         let state = Arc::new(Mutex::new(state));
@@ -197,6 +202,7 @@ impl Client {
             profiles,
             search_supported,
             history_supported,
+            click_edit_supported,
             instance,
         });
         thread::Builder::new().name("opterm-service-client".into()).spawn(move || {
@@ -272,7 +278,16 @@ impl Client {
         Ok(client)
     }
 
-    pub fn send(&self, request: Request) -> Result<()> {
+    pub fn send(&self, mut request: Request) -> Result<()> {
+        if !self.click_edit_supported
+            && let Request::CreateProfile(launch) = &mut request
+        {
+            launch.profile.caret = Default::default();
+        }
+        ensure!(
+            self.click_edit_supported || !matches!(&request, Request::ClickEdit { .. }),
+            "Running service predates click cursor movement. Existing work stays running."
+        );
         ensure!(
             self.history_supported
                 || !matches!(
@@ -518,6 +533,17 @@ impl RemoteSession {
             row,
             col,
             start,
+        })
+    }
+    pub fn click_edit(&self, row: usize, col: usize) -> Result<()> {
+        if !self.client.click_edit_supported {
+            return self.select(row, col, true);
+        }
+        self.client.send(Request::ClickEdit {
+            id: self.id,
+            row,
+            col,
+            cursor: self.screen().cursor,
         })
     }
     pub fn rename(&self, name: Option<String>) -> Result<()> {

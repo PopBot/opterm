@@ -145,12 +145,17 @@ impl Editor {
         });
         let themes = settings.all_themes();
         if self.profile == SHELL {
-            ui.weak("Built-in fallback. Duplicate to customize.");
+            ui.weak("Built-in fallback. Duplicate to customize its launch.");
             ui.add_enabled_ui(false, |ui| {
                 profile_form(ui, &mut Profile::default(), &themes)
             });
         } else if let Some(profile) = settings.profiles.iter_mut().find(|p| p.id == self.profile) {
             profile_form(ui, profile, &themes);
+        }
+        if self.profile == SHELL {
+            caret_form(ui, &mut settings.shell_caret);
+        } else if let Some(profile) = settings.profiles.iter_mut().find(|p| p.id == self.profile) {
+            caret_form(ui, &mut profile.caret);
         }
         if ui.small_button("Add missing AI profiles").clicked() {
             settings.add_provider_presets();
@@ -273,6 +278,32 @@ impl Editor {
             });
         });
     }
+}
+fn caret_form(ui: &mut egui::Ui, caret: &mut opterm::settings::Caret) {
+    use opterm::settings::Cursor;
+    ui.horizontal(|ui| {
+        ui.label("Caret shape");
+        egui::ComboBox::from_id_salt("profile-caret")
+            .selected_text(
+                caret
+                    .shape
+                    .map(Cursor::label)
+                    .unwrap_or("Appearance default"),
+            )
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut caret.shape, None, "Appearance default");
+                for shape in [
+                    Cursor::Block,
+                    Cursor::Bar,
+                    Cursor::Outline,
+                    Cursor::Underline,
+                ] {
+                    ui.selectable_value(&mut caret.shape, Some(shape), shape.label());
+                }
+            });
+        ui.checkbox(&mut caret.blink, "Blinking caret");
+    });
+    ui.weak("Caret changes apply to running sessions when saved.");
 }
 fn profile_form(ui: &mut egui::Ui, profile: &mut Profile, themes: &[Theme]) {
     egui::Grid::new("profile-form")

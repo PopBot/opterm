@@ -295,6 +295,16 @@ fn one_controller_and_duplicate_service_preserve_existing_work() {
             .is_err()
     );
     assert!(
+        second
+            .call(Request::ClickEdit {
+                id,
+                row: 0,
+                col: 0,
+                cursor: None
+            })
+            .is_err()
+    );
+    assert!(
         snapshot(second.call(Request::TakeControl(id)).unwrap())
             .info
             .controlled
@@ -308,6 +318,16 @@ fn one_controller_and_duplicate_service_preserve_existing_work() {
             .is_err()
     );
     assert!(first.call(Request::End(id)).is_err());
+    assert!(
+        first
+            .call(Request::ClickEdit {
+                id,
+                row: 0,
+                col: 0,
+                cursor: None
+            })
+            .is_err()
+    );
     write(&mut second, id, "printf 'CONTROL_OK\\n'\n");
     wait_screen(&mut second, id, "CONTROL_OK");
     let mut duplicate = Service::spawn(service.directory.path());
@@ -444,6 +464,7 @@ fn configured_profiles_capture_launch_and_live_themes_preserve_program_colors() 
         id: "agent".into(),
         name: "Agent shell".into(),
         provider: None,
+        caret: Default::default(),
         executable: "/bin/sh".into(),
         arguments: vec!["-i".into()],
         directory: service.directory.path().display().to_string(),
