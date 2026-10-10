@@ -112,6 +112,96 @@ fn shell(connection: &mut Connection) -> u64 {
     id
 }
 
+fn wait_info(
+    connection: &mut Connection,
+    id: u64,
+    predicate: impl Fn(&opterm::service::Info) -> bool,
+) -> opterm::service::Info {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let info = list(connection)
+            .into_iter()
+            .find(|info| info.id == id)
+            .unwrap();
+        if predicate(&info) {
+            return info;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Agent identity timed out: title={}, provider={:?}",
+            info.title,
+            info.provider
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn provider_recognition_restores_shell_title_and_preserves_manual_names_on_reattach() {
+    use opterm::agents::Provider;
+    let service = Service::start();
+    let mut connection = service.connect();
+    let id = shell(&mut connection);
+    // The agent changes its own title immediately, before the next detector poll.
+    for provider in Provider::ALL {
+        let agent = service.directory.path().join(provider.executable());
+        std::fs::write(&agent, "#!/bin/sh\nprintf '\\033]2;Agent task title\\007AGENT_READY\\n'\nread -r line\nprintf 'AGENT_END\\n'\n").unwrap();
+        std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        write(&mut connection, id, "printf '\\033]2;Project shell\\007'\n");
+        wait_info(&mut connection, id, |i| i.title == "Project shell");
+        connection
+            .call(Request::Rename {
+                id,
+                name: Some("My work".into()),
+            })
+            .unwrap();
+        write(&mut connection, id, &format!("'{}'\n", agent.display()));
+        let running = wait_info(&mut connection, id, |i| i.provider == Some(provider));
+        assert_eq!(running.title, provider.name());
+        assert_eq!(running.name.as_deref(), Some("My work"));
+        connection.call(Request::Detach(id)).unwrap();
+        let detached = wait_info(&mut connection, id, |i| !i.attached);
+        assert_eq!(detached.provider, Some(provider));
+        drop(connection);
+        connection = service.connect();
+        let attached = snapshot(connection.call(Request::Attach(id)).unwrap());
+        assert_eq!(attached.info.provider, Some(provider));
+        assert_eq!(attached.info.name.as_deref(), Some("My work"));
+        write(&mut connection, id, "quit\n");
+        let restored = wait_info(&mut connection, id, |i| {
+            i.provider.is_none() && i.title == "Project shell"
+        });
+        assert_eq!(restored.name.as_deref(), Some("My work"));
+        connection.call(Request::Rename { id, name: None }).unwrap();
+    }
+    // The title event guard also protects the shell title without job control.
+    write(&mut connection, id, "set +m\n");
+    let agent = service.directory.path().join("codex");
+    write(&mut connection, id, &format!("'{}'\n", agent.display()));
+    wait_info(&mut connection, id, |i| i.provider == Some(Provider::Codex));
+    write(&mut connection, id, "quit\n");
+    wait_info(&mut connection, id, |i| {
+        i.provider.is_none() && i.title == "Project shell"
+    });
+    write(&mut connection, id, "set -m\n");
+    // A background provider in this same session must not rename the foreground shell.
+    let agent = service.directory.path().join("claude");
+    std::fs::write(&agent, "#!/bin/sh\nsleep 3\n").unwrap();
+    write(
+        &mut connection,
+        id,
+        &format!("'{}' & printf 'BACKGROUND_STARTED\\n'\n", agent.display()),
+    );
+    wait_screen(&mut connection, id, "BACKGROUND_STARTED");
+    thread::sleep(Duration::from_millis(750));
+    let background = list(&mut connection)
+        .into_iter()
+        .find(|i| i.id == id)
+        .unwrap();
+    assert_eq!(background.provider, None);
+    assert_eq!(background.title, "Project shell");
+}
+
 #[test]
 fn shell_and_scrollback_survive_view_disconnect_and_detach() {
     let service = Service::start();
@@ -353,6 +443,7 @@ fn configured_profiles_capture_launch_and_live_themes_preserve_program_colors() 
     let profile = Profile {
         id: "agent".into(),
         name: "Agent shell".into(),
+        provider: None,
         executable: "/bin/sh".into(),
         arguments: vec!["-i".into()],
         directory: service.directory.path().display().to_string(),

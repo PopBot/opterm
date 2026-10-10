@@ -17,7 +17,7 @@ The active file is `settings.toml` in the platform configuration directory's `se
 The window shows the actual configuration path. **Edit configuration…** uses its registered desktop application; **Open backup folder** opens the recovery directory. Save once to create a missing settings file. `OPTERM_CONFIG_DIR` and `OPTERM_RECOVERY_DIR` override these two leaf directories for isolated development or custom placement. These do not change `OPTERM_STATE_DIR` or switch session services. The accepted folder picker, remembered storage location, migration, and cache controls remain future work.
 
 ```toml
-version = 2
+version = 3
 
 [appearance]
 chrome = "system"
@@ -29,7 +29,7 @@ line_height = 1.2
 cursor = "outline"
 ```
 
-Chrome accepts `system`, `dark`, or `light`; cursor accepts `outline`, `bar`, or `underline`. Font size is 8–40 logical pixels, padding 0–32, line height 1–2. Version-1 appearance-only settings migrate in memory and remain untouched until Save. Profiles/themes and the optional `restore_layout` startup flag use version 2; older version-2 files default to restoration enabled. Unknown fields, unsupported versions, nonfinite/out-of-range values, and files larger than 64 KiB are rejected. An unavailable font falls back to an available system monospace face. Saved settings are global across desktop instances; each instance checks external edits about once a second. The preview illustrates spacing with the currently installed application font; a newly selected family takes effect on Save.
+Chrome accepts `system`, `dark`, or `light`; cursor accepts `outline`, `bar`, or `underline`. Font size is 8–40 logical pixels, padding 0–32, line height 1–2. Version-1/2 settings migrate in memory to version 3 and remain untouched until Save. Version 3 adds optional provider identity and editable AI launch/theme presets; older files gain missing presets without changing their default selection. Unknown fields, unsupported versions, nonfinite/out-of-range values, and files larger than 64 KiB are rejected. An unavailable font falls back to an available system monospace face. Saved settings are global across desktop instances; each instance checks external edits about once a second. The preview illustrates spacing with the currently installed application font; a newly selected family takes effect on Save.
 
 ## Last-valid backup behavior
 

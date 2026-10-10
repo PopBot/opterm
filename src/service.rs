@@ -42,6 +42,8 @@ pub struct Info {
     pub recording: bool,
     #[serde(default)]
     pub history_error: Option<String>,
+    #[serde(default)]
+    pub provider: Option<crate::agents::Provider>,
 }
 #[derive(Serialize, Deserialize)]
 pub struct Snapshot {
@@ -333,6 +335,7 @@ impl Managed {
             profile: self.profile.clone(),
             recording: self.session.recording(),
             history_error: self.session.history_error(),
+            provider: self.session.provider(),
         }
     }
     fn revision(&self) -> u64 {
@@ -615,6 +618,48 @@ pub fn serve(path: &Path) -> Result<()> {
     }));
     let next_client = AtomicU64::new(1);
     let running = Arc::new(AtomicBool::new(true));
+    let monitor_hub = Arc::downgrade(&hub);
+    let monitor_running = running.clone();
+    let monitor = thread::Builder::new()
+        .name("opterm-agent-recognition".into())
+        .spawn(move || {
+            let mut detector = crate::agents::Detector::default();
+            while monitor_running.load(Ordering::Relaxed) {
+                let Some(hub) = monitor_hub.upgrade() else {
+                    break;
+                };
+                let targets: Vec<_> = {
+                    let hub = hub.lock().unwrap();
+                    hub.sessions
+                        .iter()
+                        .filter_map(|(&id, managed)| {
+                            managed.session.process_target().map(|target| (id, target))
+                        })
+                        .collect()
+                };
+                let providers = detector.scan(
+                    &targets
+                        .iter()
+                        .map(|(_, target)| *target)
+                        .collect::<Vec<_>>(),
+                );
+                let hub = hub.lock().unwrap();
+                for ((id, _), provider) in targets.iter().zip(providers) {
+                    if let Some(managed) = hub.sessions.get(id) {
+                        managed.session.set_provider(if managed.session.exited() {
+                            None
+                        } else {
+                            provider
+                        });
+                    }
+                }
+                for managed in hub.sessions.values().filter(|m| m.session.exited()) {
+                    managed.session.set_provider(None);
+                }
+                drop(hub);
+                thread::sleep(Duration::from_millis(500));
+            }
+        })?;
     while running.load(Ordering::Relaxed) {
         let mut stream = match listener.accept() {
             Ok(stream) => stream,
@@ -677,6 +722,7 @@ pub fn serve(path: &Path) -> Result<()> {
         });
     }
     drop(listener);
+    let _ = monitor.join();
     drop(lock);
     Ok(())
 }

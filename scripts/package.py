@@ -159,6 +159,8 @@ def main():
         shutil.copyfile(ROOT / 'docs/distribution.md', resources / 'DISTRIBUTION.md')
         shutil.copyfile(ROOT / 'assets/fonts/NotoEmoji-OFL.txt', resources / 'NotoEmoji-OFL.txt')
         shutil.copyfile(ROOT / 'docs/fonts.md', resources / 'FONTS.md')
+        shutil.copyfile(ROOT / 'assets/providers/LICENSE.lobe-icons', resources / 'Lobe-Icons-LICENSE.txt')
+        shutil.copyfile(ROOT / 'assets/providers/README.md', resources / 'PROVIDER-LOGOS.md')
         for document in resources.glob('*.md'):
             content = document.read_text(encoding='utf-8')
             for reference in set(re.findall(r'\]\(([^)]+)\)', content)):

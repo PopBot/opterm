@@ -151,6 +151,7 @@ pub struct Profile {
     pub directory: String,
     pub environment: Vec<Environment>,
     pub theme: String,
+    pub provider: Option<crate::agents::Provider>,
 }
 impl Default for Profile {
     fn default() -> Self {
@@ -162,6 +163,7 @@ impl Default for Profile {
             directory: String::new(),
             environment: Vec::new(),
             theme: DARK.into(),
+            provider: None,
         }
     }
 }
@@ -226,6 +228,7 @@ impl Profile {
             id: self.id.clone(),
             name: self.name.clone(),
             theme: self.theme.clone(),
+            provider: self.provider,
         }
     }
 }
@@ -249,6 +252,8 @@ pub struct ProfileTag {
     pub id: String,
     pub name: String,
     pub theme: String,
+    #[serde(default)]
+    pub provider: Option<crate::agents::Provider>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Launch {

@@ -103,11 +103,14 @@ def main():
     dpy = None
     env = None
     controls_only = '--controls-only' in sys.argv
-    arguments = [arg for arg in sys.argv[1:] if arg != '--controls-only']
+    providers_only = '--providers-only' in sys.argv
+    arguments = [arg for arg in sys.argv[1:] if arg not in ('--controls-only', '--providers-only')]
     binary = Path(arguments[0]).resolve() if arguments else TARGET / 'debug/opterm'
     try:
         display = ':' + server.stdout.readline().decode().strip()
         env = {**os.environ, 'DISPLAY': display, 'LIBGL_ALWAYS_SOFTWARE': '1', 'WINIT_UNIX_BACKEND': 'x11', 'OPTERM_STATE_DIR': state.name + '/runtime', 'OPTERM_CONFIG_DIR': state.name + '/settings', 'OPTERM_RECOVERY_DIR': state.name + '/recovery'}
+        if providers_only:
+            env['SHELL'] = '/bin/sh'  # Avoid personal prompt hooks overwriting fixture titles.
         app = subprocess.Popen([str(binary), '--', '/bin/sh'], cwd=ROOT, env=env)
         dpy = wait_until(lambda: X.XOpenDisplay(display.encode()))
         root = X.XDefaultRootWindow(dpy)
@@ -189,6 +192,68 @@ def main():
             type_text(command + " > '" + str(path) + "'\n")
             wait_until(lambda: path.exists() and path.stat().st_size > 0)
             return path.read_text().strip()
+
+        if providers_only:
+            X.XMoveWindow(dpy, window, 0, 0); X.XResizeWindow(dpy, window, 1000, 680)
+            X.XFlush(dpy); time.sleep(0.3)
+            def title_of(current):
+                value = C.c_void_p()
+                X.XFetchName(dpy, current, C.byref(value))
+                title = C.string_at(value).decode() if value else ''
+                if value: X.XFree(value)
+                return title
+            fixtures = Path(state.name) / 'agents'
+            fixtures.mkdir()
+            for index, (name, executable) in enumerate([('Claude', 'claude'), ('Codex', 'codex'), ('Copilot', 'copilot'), ('Antigravity', 'agy')]):
+                fixture = fixtures / executable
+                fixture.write_text("#!/bin/sh\nprintf '\\033]2;Agent task\\007CLI fixture ready\\n'\nread -r line\n")
+                fixture.chmod(0o700)
+                if index: shortcut(ord('t'))
+                command_file("stty -echo; printf '\\033]2;Project shell\\007'; printf READY", 'provider-ready-' + executable)
+                wait_until(lambda: title_of(window) == 'Opterm — Project shell')
+                type_text("'" + str(fixture) + "'\n")
+                wait_until(lambda: title_of(window) == 'Opterm — ' + name)
+            time.sleep(0.5)
+            print('Provider tabs screenshot:', screenshot(display, 'prototype-providers-linux.png'))
+            type_text('quit\n')
+            wait_until(lambda: title_of(window) == 'Opterm — Project shell')
+            # Restore a manual name through the existing layout contract and verify
+            # that starting/exiting another agent cannot replace the window title.
+            close_window(window); assert app.wait(timeout=5) == 0
+            layout_path = next((Path(env['OPTERM_STATE_DIR']) / 'layouts').glob('*.json'))
+            doc = json.loads(layout_path.read_text())
+            doc['tabs'][doc['active']]['name'] = 'My work'
+            layout_path.write_text(json.dumps(doc))
+            app, window = reopen()
+            wait_until(lambda: title_of(window) == 'Opterm — My work')
+            type_text("'" + str(fixtures / 'agy') + "'\n")
+            time.sleep(1.0)
+            assert title_of(window) == 'Opterm — My work'
+            type_text('quit\n'); time.sleep(0.8)
+            assert title_of(window) == 'Opterm — My work'
+            print('Four provider labels/logos, exit restores shell title, and manual name survives agent launch/exit and reattachment: passed')
+            shortcut(ord(','))
+            settings_window = wait_until(lambda: next(iter(find_windows('Opterm Settings')), None))
+            X.XMoveWindow(dpy, settings_window, 0, 0)
+            X.XMapWindow(dpy, settings_window); X.XSync(dpy, 0); time.sleep(0.2)
+            X.XSetInputFocus(dpy, settings_window, 1, 0); X.XFlush(dpy); time.sleep(0.4)
+            click(285, 22); time.sleep(0.3)
+            click(150, 89); time.sleep(0.3)
+            print('Provider profiles menu screenshot:', screenshot(display, 'prototype-provider-menu-linux.png'))
+            click(75, 137)  # Antigravity preset, including its identity and theme.
+            print('Provider profile screenshot:', screenshot(display, 'prototype-provider-profile-linux.png'))
+            click(180, 62)  # Theme editor follows the selected profile.
+            print('Provider theme screenshot:', screenshot(display, 'prototype-provider-theme-linux.png'))
+            click(35, 520)
+            wait_until(lambda: not find_windows('Opterm Settings'))
+            config = Path(env['OPTERM_CONFIG_DIR']) / 'settings.toml'
+            settings = tomllib.loads(config.read_text())
+            assert settings['version'] == 3
+            assert {p['provider'] for p in settings['profiles']} == {'claude', 'codex', 'copilot', 'antigravity'}
+            assert {p['executable'] for p in settings['profiles']} == {'claude', 'codex', 'copilot', 'agy'}
+            assert len({t['cursor'] for t in settings['themes']}) == 4
+            print('Provider presets, identity metadata, and distinct editable themes saved through Settings: passed')
+            return
 
         def controls():
             nonlocal app, window, env
@@ -621,8 +686,9 @@ finally:
         print('Profiles screenshot:', screenshot(display, 'prototype-profiles-linux.png'))
         click(35, 520); wait_until(lambda: not find_windows('Opterm Settings'))
         data = tomllib.loads(config.read_text())
-        assert data['profiles'][0]['name'] == 'GUI shell' and data['profiles'][0]['theme'] == 'light', data
-        assert data['default_profile'] == data['profiles'][0]['id']
+        gui_profile = next(p for p in data['profiles'] if p['name'] == 'GUI shell')
+        assert gui_profile['theme'] == 'light', data
+        assert data['default_profile'] == gui_profile['id']
         assert backup.read_bytes() == config.read_bytes()
         terminal_focus(); app_shortcut(ord('t'))
         assert profile_command("printf '%s' \"$PWD\"", 'profile-cwd') == str(profile_folder)
@@ -634,7 +700,7 @@ finally:
         edit(170, 114, 'GUI Theme')
         print('Themes screenshot:', screenshot(display, 'prototype-themes-linux.png'))
         click(35, 520); wait_until(lambda: not find_windows('Opterm Settings'))
-        theme_id = tomllib.loads(config.read_text())['themes'][0]['id']
+        theme_id = next(t['id'] for t in tomllib.loads(config.read_text())['themes'] if t['name'] == 'GUI Theme')
         config.write_text(config.read_text().replace('theme = "light"', 'theme = "' + theme_id + '"'))
         time.sleep(1.3); terminal_focus()
         # Existing profile launches retain the selected theme; new tabs use the edited preset.
@@ -651,13 +717,13 @@ finally:
         assert split_pid not in (custom_pid, light_pid)
         assert profile_command("printf '%s' \"$PWD\"", 'profile-split-cwd') == str(profile_folder)
         settings_window = open_settings(); click(285, 22); click(180, 62); time.sleep(0.3)
-        click(150, 89); click(50, 160); time.sleep(0.3)  # Select custom theme.
+        click(150, 89); click(50, 240); time.sleep(0.3)  # Select custom theme.
         click(365, 89); click(35, 520)  # Delete theme then Save.
         wait_until(lambda: not find_windows('Opterm Settings'))
         terminal_focus(); wait_until(lambda: screen_pixel(2, 32) == (31, 31, 33))
         assert profile_command("printf '%s' $$", 'profile-after-theme-delete') == split_pid
         settings_window = open_settings(); click(285, 22); time.sleep(0.2)
-        click(150, 89); click(50, 137); time.sleep(0.2)  # Select GUI shell profile.
+        click(150, 89); click(50, 221); time.sleep(0.2)  # Select GUI shell profile.
         click(365, 89); click(35, 520)  # Delete default profile, reverting to built-in Shell.
         wait_until(lambda: not find_windows('Opterm Settings'))
         terminal_focus()

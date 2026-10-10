@@ -3,6 +3,7 @@
 mod ime;
 mod input;
 mod profiles_ui;
+mod provider_ui;
 mod settings_ui;
 use opterm::{
     layout::{Axis, Layout},
@@ -251,6 +252,7 @@ impl App {
         startup: Startup,
         notice: Option<String>,
     ) -> anyhow::Result<Self> {
+        egui_extras::install_image_loaders(&cc.egui_ctx);
         let restored_window = if restored {
             saved_layout.as_ref().map(|store| store.window.clone())
         } else {
@@ -777,7 +779,14 @@ impl App {
     }
     fn profile_menu(&mut self, ui: &mut egui::Ui, axis: Option<Axis>) {
         for profile in self.settings.current.all_profiles() {
-            if ui.button(&profile.name).clicked() {
+            if ui
+                .add(provider_ui::button(
+                    ui,
+                    provider_ui::profile_provider(&profile),
+                    &profile.name,
+                ))
+                .clicked()
+            {
                 if let Some(axis) = axis {
                     self.split_with_profile(axis, &profile.id);
                 } else {
@@ -964,6 +973,11 @@ impl App {
                 ui.horizontal(|ui| {
                     for (index, tab) in self.tabs.iter().enumerate() {
                         let automatic_title = self.pane_title(tab.focused);
+                        let provider = self
+                            .panes
+                            .get(&tab.focused)
+                            .and_then(|pane| pane.info())
+                            .and_then(|info| info.provider);
                         let manual_name = tab.name.clone();
                         let title =
                             manual_name
@@ -983,7 +997,7 @@ impl App {
                             title.push_str(" · moving");
                         }
                         let response = ui.add(
-                            egui::Button::new(title)
+                            provider_ui::button(ui, provider, title)
                                 .fill(if index == self.active {
                                     if ctx.style().visuals.dark_mode {
                                         Color32::from_rgb(66, 66, 68)
@@ -1074,11 +1088,15 @@ impl App {
                                     "detached"
                                 };
                                 if ui
-                                    .button(format!(
-                                        "{} · {} · {}",
-                                        info.id,
-                                        name.chars().take(30).collect::<String>(),
-                                        state
+                                    .add(provider_ui::button(
+                                        ui,
+                                        info.provider,
+                                        format!(
+                                            "{} · {} · {}",
+                                            info.id,
+                                            name.chars().take(30).collect::<String>(),
+                                            state
+                                        ),
                                     ))
                                     .clicked()
                                 {

@@ -96,6 +96,8 @@ Q61 accepts editable platform-appropriate keyboard defaults and reset controls. 
 
 Q81 accepts program-supplied automatic tab titles, falling back to the profile name. Manual names win until reset to automatic and survive tab movement and reattachment.
 
+2026-10-10 accepted correction: recognize running Claude, Codex, Copilot, and Antigravity CLI sessions automatically, display their name and a compact provider logo in the tab, and restore the shell title on agent exit. Manual names still win. Include editable general launch profiles with provider identity and distinct terminal color themes; provider logos may also appear in the launch picker and settings. Fonts remain global under Appearance. This adds no provider account/API integration or surrounding agent panels.
+
 Q82 accepts starting each new split as a separate session with the default profile; the split menu can select another profile. Starting directories follow Q75.
 
 Q83 accepts preserving pasted text and line breaks without appending an extra Enter. The shell or running program handles embedded line breaks; protocol compatibility will be tested during implementation.

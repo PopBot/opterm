@@ -87,7 +87,7 @@ fn profiles_themes_and_recovery_omit_only_marked_secret_values() {
 fn appearance_only_v1_migrates_and_deleted_references_have_safe_fallbacks() {
     let old = b"version = 1\n[appearance]\nfont_size = 16.0\n";
     let settings = Settings::parse(old).unwrap();
-    assert_eq!(settings.version, 2);
+    assert_eq!(settings.version, 3);
     assert_eq!(settings.appearance.font_size, 16.0);
     assert_eq!(settings.default_profile().id, "shell");
     let mut settings = configured();
@@ -97,6 +97,48 @@ fn appearance_only_v1_migrates_and_deleted_references_have_safe_fallbacks() {
     settings.profiles.clear();
     assert_eq!(settings.default_profile().id, "shell");
     assert!(settings.launch("agent").is_err());
+}
+
+#[test]
+fn provider_presets_migrate_once_and_preserve_user_settings() {
+    use opterm::agents::Provider;
+    let mut original = configured();
+    original.profiles[0].name = "Codex".into();
+    let old = toml::to_string(&original)
+        .unwrap()
+        .replacen("version = 3", "version = 2", 1);
+    let migrated = Settings::parse(old.as_bytes()).unwrap();
+    assert_eq!(migrated.default_profile, original.default_profile);
+    assert_eq!(migrated.profiles[0], original.profiles[0]);
+    for provider in Provider::ALL {
+        let profile = migrated
+            .profiles
+            .iter()
+            .find(|p| p.provider == Some(provider))
+            .unwrap();
+        assert_eq!(profile.executable, provider.executable());
+        assert_eq!(migrated.theme(&profile.theme).cursor.0, provider.accent());
+    }
+    let mut deleted = migrated;
+    deleted
+        .profiles
+        .retain(|p| p.provider != Some(Provider::Codex));
+    let reloaded = Settings::parse(&deleted.encode().unwrap()).unwrap();
+    assert_eq!(reloaded, deleted);
+    let mut restored = reloaded;
+    let themes_before_restore = restored.themes.len();
+    restored.add_provider_presets();
+    restored.add_provider_presets();
+    assert_eq!(restored.themes.len(), themes_before_restore);
+    assert_eq!(
+        restored
+            .profiles
+            .iter()
+            .filter(|p| p.provider == Some(Provider::Codex))
+            .count(),
+        1
+    );
+    restored.validate().unwrap();
 }
 #[test]
 fn invalid_env_arguments_and_oversized_files_cannot_replace_recovery() {

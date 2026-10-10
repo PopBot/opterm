@@ -66,12 +66,27 @@ impl Editor {
         }
         let selected = settings.profile(&self.profile).unwrap();
         ui.horizontal(|ui| {
+            if let Some(provider) = crate::provider_ui::profile_provider(&selected) {
+                ui.add(crate::provider_ui::image(ui, provider, 18.0));
+            }
             egui::ComboBox::from_id_salt("profile-choice")
                 .width(190.0)
                 .selected_text(&selected.name)
                 .show_ui(ui, |ui| {
                     for p in settings.all_profiles() {
-                        ui.selectable_value(&mut self.profile, p.id, p.name);
+                        let response = ui.add(
+                            crate::provider_ui::button(
+                                ui,
+                                crate::provider_ui::profile_provider(&p),
+                                &p.name,
+                            )
+                            .selected(self.profile == p.id),
+                        );
+                        if response.clicked() {
+                            self.theme = p.theme;
+                            self.profile = p.id;
+                            ui.close();
+                        }
                     }
                 });
             if ui.button("Add").clicked() {
@@ -137,6 +152,10 @@ impl Editor {
         } else if let Some(profile) = settings.profiles.iter_mut().find(|p| p.id == self.profile) {
             profile_form(ui, profile, &themes);
         }
+        if ui.small_button("Add missing AI profiles").clicked() {
+            settings.add_provider_presets();
+        }
+        ui.weak("Provider colors apply to the terminal theme. Font follows Appearance.");
     }
     fn add_theme(&mut self, settings: &mut Settings, mut theme: Theme) {
         match fresh_id("theme") {
@@ -160,7 +179,19 @@ impl Editor {
             self.theme = DARK.into();
         }
         let selected = settings.theme(&self.theme);
+        let provider_for_theme = |id: &str| {
+            if matches!(id, DARK | LIGHT) {
+                return None;
+            }
+            settings
+                .profiles
+                .iter()
+                .find(|p| p.theme == id)
+                .and_then(crate::provider_ui::profile_provider)
+        };
+        let provider = provider_for_theme(&selected.id);
         ui.horizontal(|ui| {
+            if let Some(provider) = provider { ui.add(crate::provider_ui::image(ui, provider, 18.0)); }
             egui::ComboBox::from_id_salt("theme-choice").width(190.0).selected_text(&selected.name).show_ui(ui, |ui| {
                 for t in settings.all_themes() { ui.selectable_value(&mut self.theme, t.id, t.name); }
             });
@@ -282,6 +313,30 @@ fn profile_form(ui: &mut egui::Ui, profile: &mut Profile, themes: &[Theme]) {
                         ui.selectable_value(&mut profile.theme, theme.id.clone(), &theme.name);
                     }
                 });
+            ui.end_row();
+            ui.label("AI provider");
+            ui.horizontal(|ui| {
+                if let Some(provider) = crate::provider_ui::profile_provider(profile) {
+                    ui.add(crate::provider_ui::image(ui, provider, 18.0));
+                }
+                egui::ComboBox::from_id_salt("profile-provider")
+                    .selected_text(profile.provider.map(|p| p.name()).unwrap_or("Automatic"))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut profile.provider, None, "Automatic");
+                        for provider in opterm::agents::Provider::ALL {
+                            if ui
+                                .add(
+                                    crate::provider_ui::button(ui, Some(provider), provider.name())
+                                        .selected(profile.provider == Some(provider)),
+                                )
+                                .clicked()
+                            {
+                                profile.provider = Some(provider);
+                                ui.close();
+                            }
+                        }
+                    });
+            });
             ui.end_row();
         });
     ui.collapsing("Arguments", |ui| {

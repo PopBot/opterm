@@ -67,12 +67,18 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             appearance: Appearance::default(),
             default_profile: SHELL.into(),
             workspace_directory: String::new(),
-            profiles: Vec::new(),
-            themes: Vec::new(),
+            profiles: crate::agents::Provider::ALL
+                .into_iter()
+                .map(|p| p.profile())
+                .collect(),
+            themes: crate::agents::Provider::ALL
+                .into_iter()
+                .map(|p| p.theme())
+                .collect(),
             restore_layout: true,
             shortcuts: crate::shortcuts::Shortcuts::default(),
             copy_on_select: false,
@@ -83,8 +89,8 @@ impl Default for Settings {
 impl Settings {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == 2,
-            "Unsupported settings version {} (expected 2)",
+            self.version == 3,
+            "Unsupported settings version {} (expected 3)",
             self.version
         );
         self.shortcuts.validate()?;
@@ -218,11 +224,61 @@ impl Settings {
     }
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let mut settings: Self = toml::from_str(std::str::from_utf8(bytes)?)?;
-        if settings.version == 1 {
-            settings.version = 2;
+        if matches!(settings.version, 1 | 2) {
+            settings.version = 3;
+            // Seed once during migration, preserving existing presets and deletions
+            // in subsequent v3 loads. Disk changes still require an explicit Save.
+            settings.add_provider_presets();
         }
         settings.validate()?;
         Ok(settings)
+    }
+    pub fn add_provider_presets(&mut self) {
+        for provider in crate::agents::Provider::ALL {
+            let existing_theme = self
+                .themes
+                .iter()
+                .find(|t| t.id == provider.theme().id)
+                .map(|t| t.id.clone());
+            if self.profiles.iter().any(|p| p.provider == Some(provider))
+                || self.profiles.len() >= 64
+                || (existing_theme.is_none() && self.themes.len() >= 64)
+            {
+                continue;
+            }
+            let mut profile = provider.profile();
+            let mut theme = provider.theme();
+            let unique = |base: &str, values: Vec<String>| {
+                std::iter::once(base.to_owned())
+                    .chain((2..).map(|n| format!("{base} {n}")))
+                    .find(|candidate| !values.iter().any(|v| v.eq_ignore_ascii_case(candidate)))
+                    .unwrap()
+            };
+            profile.id = unique(
+                &profile.id,
+                self.profiles.iter().map(|p| p.id.clone()).collect(),
+            );
+            profile.name = unique(
+                &profile.name,
+                self.profiles.iter().map(|p| p.name.clone()).collect(),
+            );
+            if let Some(id) = existing_theme {
+                profile.theme = id;
+                self.profiles.push(profile);
+                continue;
+            }
+            theme.id = unique(
+                &theme.id,
+                self.themes.iter().map(|t| t.id.clone()).collect(),
+            );
+            theme.name = unique(
+                &theme.name,
+                self.themes.iter().map(|t| t.name.clone()).collect(),
+            );
+            profile.theme = theme.id.clone();
+            self.profiles.push(profile);
+            self.themes.push(theme);
+        }
     }
     pub fn encode(&self) -> Result<Vec<u8>> {
         self.validate()?;

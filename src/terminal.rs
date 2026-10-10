@@ -80,6 +80,8 @@ impl Dimensions for Size {
 #[derive(Default)]
 struct Status {
     title: String,
+    shell_title: String,
+    provider: Option<crate::agents::Provider>,
     exited: bool,
     error: Option<String>,
 }
@@ -94,16 +96,58 @@ struct Listener {
     status: Arc<Mutex<Status>>,
     size: Arc<Mutex<PtySize>>,
     color_replies: ColorReplies,
+    root_process: Option<u32>,
+    title_detector: Arc<Mutex<crate::agents::Detector>>,
+    #[cfg(unix)]
+    foreground: Option<(Arc<std::os::fd::OwnedFd>, u32)>,
+}
+impl Listener {
+    fn shell_owns_title(&self) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            self.foreground.as_ref().is_some_and(|(fd, root)| {
+                // SAFETY: the owned descriptor is alive for the entire query.
+                let foreground = unsafe { libc::tcgetpgrp(fd.as_raw_fd()) };
+                foreground == *root as libc::pid_t && self.no_agent_for_title(Some(*root))
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            self.no_agent_for_title(None)
+        }
+    }
+    fn no_agent_for_title(&self, foreground: Option<u32>) -> bool {
+        let Some(root) = self.root_process else {
+            return false;
+        };
+        // Titles can arrive before the periodic monitor. Query at the title event
+        // so a startup OSC cannot overwrite the saved shell title. This also
+        // handles shells with job control disabled and Windows process trees.
+        self.title_detector
+            .lock()
+            .unwrap()
+            .scan(&[crate::agents::ProcessTarget { root, foreground }])
+            == [None]
+    }
+    fn set_title(&self, title: String) {
+        let shell = self.shell_owns_title();
+        let mut status = self.status.lock().unwrap();
+        if shell {
+            status.shell_title = title.clone();
+        }
+        status.title = title;
+    }
 }
 impl EventListener for Listener {
     fn send_event(&self, event: Event) {
         let reply = match event {
             Event::Title(title) => {
-                self.status.lock().unwrap().title = title;
+                self.set_title(title);
                 None
             }
             Event::ResetTitle => {
-                self.status.lock().unwrap().title.clear();
+                self.set_title(String::new());
                 None
             }
             Event::PtyWrite(text) => Some(text),
@@ -220,6 +264,7 @@ pub struct Session {
     theme: Arc<Mutex<Theme>>,
     recorder: Option<crate::history::Recorder>,
     history_options: Mutex<crate::history::Options>,
+    process_id: Option<u32>,
 }
 impl Session {
     pub fn spawn(program: &[String], wake: impl Fn() + Send + Sync + 'static) -> Result<Self> {
@@ -292,6 +337,7 @@ impl Session {
             .spawn_command(command)
             .context("Start shell/program")?;
         let killer = child.clone_killer();
+        let process_id = child.process_id();
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader()?;
         let mut pty_writer = pair.master.take_writer()?;
@@ -305,6 +351,22 @@ impl Session {
             status: status.clone(),
             size: size.clone(),
             color_replies: color_replies.clone(),
+            root_process: process_id,
+            title_detector: Arc::default(),
+            #[cfg(unix)]
+            foreground: {
+                use std::os::fd::BorrowedFd;
+                pair.master
+                    .as_raw_fd()
+                    .zip(process_id)
+                    .and_then(|(fd, root)| {
+                        // SAFETY: the master owns this descriptor during duplication.
+                        unsafe { BorrowedFd::borrow_raw(fd) }
+                            .try_clone_to_owned()
+                            .ok()
+                            .map(|fd| (Arc::new(fd), root))
+                    })
+            },
         };
         let terminal = Arc::new(Mutex::new(Term::new(
             Config {
@@ -424,6 +486,7 @@ impl Session {
             theme,
             recorder,
             history_options: Mutex::new(history_options),
+            process_id,
         })
     }
 
@@ -624,7 +687,45 @@ impl Session {
     }
 
     pub fn title(&self) -> String {
-        self.status.lock().unwrap().title.clone()
+        let status = self.status.lock().unwrap();
+        status
+            .provider
+            .map(|p| p.name().to_owned())
+            .unwrap_or_else(|| status.title.clone())
+    }
+
+    pub fn provider(&self) -> Option<crate::agents::Provider> {
+        self.status.lock().unwrap().provider
+    }
+
+    pub fn process_target(&self) -> Option<crate::agents::ProcessTarget> {
+        if self.exited() {
+            return None;
+        }
+        Some(crate::agents::ProcessTarget {
+            root: self.process_id?,
+            #[cfg(unix)]
+            foreground: self
+                .master
+                .process_group_leader()
+                .and_then(|pid| u32::try_from(pid).ok()),
+            #[cfg(not(unix))]
+            foreground: None,
+        })
+    }
+
+    pub fn set_provider(&self, provider: Option<crate::agents::Provider>) {
+        let mut status = self.status.lock().unwrap();
+        if status.provider == provider {
+            return;
+        }
+        if provider.is_none() {
+            status.title = status.shell_title.clone();
+        }
+        status.provider = provider;
+        drop(status);
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        (self.wake)();
     }
 
     pub fn mode(&self) -> TermMode {
@@ -717,7 +818,10 @@ impl Session {
             selection_color: theme.selection.0,
             cursor,
             mode,
-            title: status.title.clone(),
+            title: status
+                .provider
+                .map(|p| p.name().to_owned())
+                .unwrap_or_else(|| status.title.clone()),
             exited: status.exited,
             error: status.error.clone(),
         }
