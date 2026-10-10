@@ -7,7 +7,7 @@ The user authorized completing the remaining phases in order, committing and pus
 | 1 | Terminal input compatibility and editable shortcuts | Complete; 38 Rust tests, strict Clippy and native X11 checks passed |
 | 2 | Tab reorder, tab movement between windows, drag-out, scrollback search | Complete; 47 Rust tests, strict Clippy and focused native controls checks passed |
 | 3 | Custom settings/cache location and bounded saved-output controls | Complete; 60 Rust tests, strict Clippy and native storage checks passed |
-| 4 | Native platform checks and demonstrated fixes | In progress: native matrix and focused Linux/Wayland validation |
+| 4 | Native platform checks and demonstrated fixes | Complete; native Linux, both Mac architectures and Windows checks passed |
 | 5 | Reproducible performance measurement, measured optimization, packaging | Not started |
 
 ## Phase 1
@@ -31,3 +31,9 @@ Sessions & history now includes output recording, configurable scrollback/retent
 Raw `.ansi` output uses a bounded asynchronous writer: 1 MiB queued per session with up to 512 KiB batches. Defaults are recording enabled, 30 days, 5 GiB total, 256 MiB per stream. Active files are preserved; exhaustion/failure stops capture and reports gaps without stopping PTYs. Global opt-out is applied before creating the first shell and overrides session resume. Live history is additionally capped at one million cells, excluding the capped live screen; this is not a bound on all process memory. There is no database/index or command replay.
 
 The focused native check (`python3 scripts/smoke_storage.py`) passes recording Save/backup updates, exact ANSI output, pause/resume without backfill, staging and reopening in a custom folder, and safe clearing in both folders. Original shell PID/environment, layouts, history and independent recovery survive. Core tests also cover failed writes, retention/stream limits, overlapping paths, invalid locators and first-byte opt-out. The search test waits for final PTY output as well as child exit; the color test waits for a computed output marker rather than echoed input. Both avoid timing races. [Settings screenshot](screenshots/prototype-storage-settings-linux.png).
+
+## Phase 4
+
+[Native run 38030855922](https://github.com/PopBot/opterm/actions/runs/38030855922) passed all four jobs for `b30d074`: Linux x64, macOS Apple Silicon, macOS Intel and Windows x64. Unix jobs execute 71 tests with two optional fixtures explicitly ignored; Windows executes 47 applicable tests. Formatting and strict Clippy passed. Linux additionally passes full X11 desktop/storage checks and native nested Wayland rendering, input, layout saving and crash continuity.
+
+Demonstrated fixes include accepted BSD socket blocking mode, Windows inherited Ctrl+C state, native IME cursor/preedit handling, modern monochrome emoji and installed CJK fallback, and a Wayland geometry lock deadlock. Portable byte/readiness/path fixtures preserve their exact behavior checks. Actual macOS/Windows desktop controls, OS input methods, accessibility, color/joined emoji and physical mixed-DPI monitor acceptance remain documented gaps, not claims of certification. See [native validation](platform-validation.md) and [focused desktop results](platform-native-checks.md).
