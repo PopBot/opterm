@@ -69,8 +69,9 @@ def wait_until(check, seconds=12):
     raise RuntimeError('GUI check timed out')
 
 
-def screenshot(display, filename="prototype-linux.png"):
-    data = subprocess.check_output(['xwd', '-display', display, '-root', '-silent'])
+def screenshot(display, filename="prototype-linux.png", window=None):
+    target = ['-id', str(window)] if window is not None else ['-root']
+    data = subprocess.check_output(['xwd', '-display', display, *target, '-silent'])
     h = struct.unpack('>25I', data[:100])
     header, _, _, depth, width, height, _, byte_order, _, _, _, bits, stride, _, rm, gm, bm, _, _, colors, *_ = h
     assert depth == 24 and bits in (24, 32), (depth, bits)
@@ -104,8 +105,10 @@ def main():
     env = None
     controls_only = '--controls-only' in sys.argv
     providers_only = '--providers-only' in sys.argv
+    tabs_only = '--tabs-only' in sys.argv
+    tabs_before = '--tabs-before' in sys.argv
     caret_only = '--caret-only' in sys.argv
-    arguments = [arg for arg in sys.argv[1:] if arg not in ('--controls-only', '--providers-only', '--caret-only')]
+    arguments = [arg for arg in sys.argv[1:] if arg not in ('--controls-only', '--providers-only', '--caret-only', '--tabs-only', '--tabs-before')]
     binary = Path(arguments[0]).resolve() if arguments else TARGET / 'debug/opterm'
     try:
         display = ':' + server.stdout.readline().decode().strip()
@@ -113,13 +116,14 @@ def main():
         if providers_only:
             env['SHELL'] = '/bin/sh'  # Avoid personal prompt hooks overwriting fixture titles.
         program = ['/bin/sh']
-        if caret_only:
+        if caret_only or tabs_only or tabs_before:
             env.update(SHELL='/bin/bash', PS1='edit> ')
             config = Path(env['OPTERM_CONFIG_DIR']) / 'settings.toml'
             config.parent.mkdir(parents=True, mode=0o700)
             config.write_text('version = 3\n[shell_caret]\nshape = "block"\nblink = true\n')
             config.chmod(0o600)
             program = ['/bin/bash', '--noprofile', '--norc', '-i']
+            if tabs_only or tabs_before: env['SHELL'] = '/bin/sh'
         app = subprocess.Popen([str(binary), '--', *program], cwd=ROOT, env=env)
         dpy = wait_until(lambda: X.XOpenDisplay(display.encode()))
         root = X.XDefaultRootWindow(dpy)
@@ -140,6 +144,20 @@ def main():
         def find_window():
             windows = find_windows()
             return windows[-1] if windows else None
+        def focus_native_window(current):
+            # winit exposes a title before it finishes creating/mapping the GL window.
+            # Wait for its own map instead of racing its temporary invisible state.
+            def viewable():
+                try:
+                    info = subprocess.check_output(['xwininfo', '-display', display, '-id', str(current)],
+                                                   text=True, stderr=subprocess.DEVNULL)
+                    return 'Map State: IsViewable' in info
+                except subprocess.CalledProcessError:
+                    return False
+            wait_until(viewable)
+            X.XSetInputFocus(dpy, current, 1, 0)
+            X.XFlush(dpy)
+
         def close_window(window):
             event = XEvent()
             event.message.type = 33
@@ -154,7 +172,7 @@ def main():
         X.XMapWindow(dpy, window)
         X.XSync(dpy, 0)
         time.sleep(0.3)
-        X.XSetInputFocus(dpy, window, 1, 0)
+        focus_native_window(window)
         X.XFlush(dpy)
         time.sleep(0.5)
         def key(symbol, pressed):
@@ -179,7 +197,7 @@ def main():
             X.XMapWindow(dpy, new_window)
             X.XSync(dpy, 0)
             time.sleep(0.3)
-            X.XSetInputFocus(dpy, new_window, 1, 0)
+            focus_native_window(new_window)
             X.XFlush(dpy)
             time.sleep(0.5)
             return process, new_window
@@ -201,6 +219,101 @@ def main():
             type_text(command + " > '" + str(path) + "'\n")
             wait_until(lambda: path.exists() and path.stat().st_size > 0)
             return path.read_text().strip()
+
+        if tabs_only or tabs_before:
+            X.XMoveWindow(dpy, window, 0, 0); X.XResizeWindow(dpy, window, 1000, 680)
+            X.XFlush(dpy); time.sleep(0.4)
+            shortcut(ord(','))
+            settings_window = wait_until(lambda: next(iter(find_windows('Opterm Settings')), None))
+            X.XMoveWindow(dpy, settings_window, 0, 0); X.XRaiseWindow(dpy, settings_window)
+            focus_native_window(settings_window); X.XFlush(dpy); time.sleep(0.4)
+            click(200, 22)
+            print('Shortcuts screenshot:', screenshot(display, 'shortcuts-before.png' if tabs_before else 'shortcuts-after.png', settings_window))
+            if tabs_before:
+                return
+            close_window(settings_window); time.sleep(0.4)
+            X.XRaiseWindow(dpy, window); focus_native_window(window); X.XFlush(dpy)
+            icon_property = subprocess.check_output(['xprop', '-display', display, '-id', str(window), '-f', '_NET_WM_ICON', '32c', '_NET_WM_ICON'], text=True)
+            assert '256' in icon_property, 'Native window icon was not installed: ' + icon_property[:200]
+            print('Native application icon:', subprocess.check_output(['xprop', '-display', display, '-id', str(window), 'WM_CLASS'], text=True).strip())
+            layouts = Path(env['OPTERM_STATE_DIR']) / 'layouts'
+            layout_path = wait_until(lambda: next(iter(layouts.glob('*.json')), None))
+            def document():
+                return json.loads(layout_path.read_text())
+            def names():
+                return [tab['name'] for tab in document()['tabs']]
+            # Tab completion must remain terminal input, including Enter immediately after it.
+            completion = Path(state.name) / 'completion-unique'
+            completion.touch()
+            for index in range(4):
+                result = Path(state.name) / f'completed-{index}'
+                type_text("printf '%s' " + str(completion)[:-6])
+                key(0xff09, 1); key(0xff09, 0); X.XFlush(dpy); time.sleep(0.1)
+                type_text(" > '" + str(result) + "'\n")
+                wait_until(result.exists)
+                assert result.read_text() == str(completion), result.read_text()
+            assert len(document()['tabs']) == 1, 'Tab/Enter activated a toolbar button'
+            print('Repeated Bash Tab completion and Enter stay in the terminal: passed')
+            alpha_pid = command_file("printf '%s' $$", 'tabs-alpha')
+            shortcut(ord('t'))
+            beta_pid = command_file("printf '%s' $$", 'tabs-beta')
+            shortcut(ord('t'))
+            gamma_pid = command_file("printf '%s' $$", 'tabs-gamma')
+            close_window(window); assert app.wait(timeout=5) == 0
+            doc = document()
+            for tab, name in zip(doc['tabs'], ['Alpha', 'Beta', 'Gamma']): tab['name'] = name
+            layout_path.write_text(json.dumps(doc))
+            app, window = reopen()
+            X.XMoveWindow(dpy, window, 0, 0); X.XRaiseWindow(dpy, window); X.XFlush(dpy)
+            time.sleep(0.4)
+            print('Tab controls screenshot:', screenshot(display, 'tabs-after.png'))
+            def drag(x, y, tx, ty, preview=None, hover=None):
+                XT.XTestFakeMotionEvent(dpy, -1, x, y, 0)
+                XT.XTestFakeButtonEvent(dpy, 1, 1, 0); X.XFlush(dpy); time.sleep(0.1)
+                XT.XTestFakeMotionEvent(dpy, -1, x + 12, y, 0); X.XFlush(dpy); time.sleep(0.1)
+                if hover:
+                    XT.XTestFakeMotionEvent(dpy, -1, hover, 15, 0); X.XFlush(dpy); time.sleep(0.7)
+                XT.XTestFakeMotionEvent(dpy, -1, tx, ty, 0); X.XFlush(dpy); time.sleep(0.25)
+                if preview: print('Snap preview:', screenshot(display, preview))
+                XT.XTestFakeButtonEvent(dpy, 1, 0, 0); X.XFlush(dpy); time.sleep(0.25)
+            drag(135, 15, 8, 15)
+            wait_until(lambda: names() == ['Gamma', 'Alpha', 'Beta'])
+            assert command_file("printf '%s' $$", 'tabs-reordered') == gamma_pid
+            # Closing an inactive tab must preserve the active shell.
+            click(124, 15)
+            wait_until(lambda: names() == ['Gamma', 'Beta'])
+            assert command_file("printf '%s' $$", 'tabs-after-close') == gamma_pid
+            # Reorder at the empty end of the strip, then snap the inactive Beta beside Gamma.
+            drag(30, 15, 390, 15)
+            wait_until(lambda: names() == ['Beta', 'Gamma'])
+            click(25, 15)  # Start with the dragged Beta tab active.
+            drag(25, 15, 990, 320, 'tabs-snap-preview.png', hover=85)
+            wait_until(lambda: names() == ['Gamma'] and 'Split' in document()['tabs'][0]['layout'])
+            assert command_file("printf '%s' $$", 'tabs-snapped') == beta_pid
+            shortcut(0xff51)
+            assert command_file("printf '%s' $$", 'tabs-snap-left') == gamma_pid
+            # Right-click the entire remaining tab and close both split views.
+            XT.XTestFakeMotionEvent(dpy, -1, 30, 15, 0)
+            XT.XTestFakeButtonEvent(dpy, 3, 1, 0); XT.XTestFakeButtonEvent(dpy, 3, 0, 0)
+            X.XFlush(dpy); time.sleep(0.3)
+            print('Tab menu screenshot:', screenshot(display, 'tabs-menu.png'))
+            click(60, 115)
+            wait_until(lambda: not document()['tabs'])
+            with socket.socket(socket.AF_UNIX) as probe:
+                probe.connect(str(Path(env['OPTERM_STATE_DIR']) / 'service.sock'))
+                def call(request):
+                    body = json.dumps(request).encode(); probe.sendall(struct.pack('<I', len(body)) + body)
+                    def receive(count):
+                        data = b''
+                        while len(data) < count:
+                            chunk = probe.recv(count - len(data)); assert chunk; data += chunk
+                        return data
+                    return json.loads(receive(struct.unpack('<I', receive(4))[0]))
+                call({'Hello': 1})
+                infos = call('List')['List']
+                assert len(infos) == 3 and all(not info['exited'] and not info['attached'] for info in infos)
+            print('X close, tab context menu, reordering and pane snapping preserve the three original sessions: passed')
+            return
 
         if caret_only:
             X.XMoveWindow(dpy, window, 0, 0); X.XResizeWindow(dpy, window, 1000, 680)
@@ -255,7 +368,7 @@ def main():
                 shortcut(ord(','))
                 settings_window = wait_until(lambda: next(iter(find_windows('Opterm Settings')), None))
                 X.XMoveWindow(dpy, settings_window, 0, 0); X.XMapWindow(dpy, settings_window)
-                X.XSetInputFocus(dpy, settings_window, 1, 0); X.XFlush(dpy); time.sleep(0.4)
+                focus_native_window(settings_window); X.XFlush(dpy); time.sleep(0.4)
                 click(285, 22)
                 print('Caret settings screenshot:', screenshot(display, 'prototype-caret-settings-linux.png'))
                 # Profile controls follow the disabled built-in launch form.
@@ -270,11 +383,11 @@ def main():
                 XT.XTestFakeMotionEvent(dpy, -1, 35, 520, 0); X.XFlush(dpy); time.sleep(0.1)
                 XT.XTestFakeButtonEvent(dpy, 1, 1, 0); X.XFlush(dpy); time.sleep(0.1)
                 XT.XTestFakeButtonEvent(dpy, 1, 0, 0); X.XFlush(dpy); time.sleep(0.3)
-                X.XSetInputFocus(dpy, window, 1, 0); X.XFlush(dpy)
+                focus_native_window(window); X.XFlush(dpy)
                 wait_until(lambda: not find_windows('Opterm Settings'))
                 saved = tomllib.loads(config.read_text())
                 assert saved['shell_caret'] == {'shape': 'bar', 'blink': False}, saved['shell_caret']
-                X.XSetInputFocus(dpy, window, 1, 0); X.XFlush(dpy); time.sleep(0.5)
+                focus_native_window(window); X.XFlush(dpy); time.sleep(0.5)
                 XT.XTestFakeMotionEvent(dpy, -1, 900, 650, 0); X.XFlush(dpy)
                 assert len(set(frames())) == 1, 'Disabled caret still blinked'
                 assert command_file("printf '%s' $$", 'caret-retained-pid') == before_pid
@@ -325,7 +438,7 @@ def main():
             settings_window = wait_until(lambda: next(iter(find_windows('Opterm Settings')), None))
             X.XMoveWindow(dpy, settings_window, 0, 0)
             X.XMapWindow(dpy, settings_window); X.XSync(dpy, 0); time.sleep(0.2)
-            X.XSetInputFocus(dpy, settings_window, 1, 0); X.XFlush(dpy); time.sleep(0.4)
+            focus_native_window(settings_window); X.XFlush(dpy); time.sleep(0.4)
             click(285, 22); time.sleep(0.3)
             click(150, 89); time.sleep(0.3)
             print('Provider profiles menu screenshot:', screenshot(display, 'prototype-provider-menu-linux.png'))
@@ -359,7 +472,7 @@ def main():
                 app = subprocess.Popen([str(binary), '--', '/bin/sh'], cwd=ROOT, env=env)
                 window = wait_until(find_window)
                 X.XMoveWindow(dpy, window, 0, 0); X.XResizeWindow(dpy, window, 1000, 680)
-                X.XMapWindow(dpy, window); X.XSetInputFocus(dpy, window, 1, 0); X.XFlush(dpy)
+                X.XMapWindow(dpy, window); focus_native_window(window); X.XFlush(dpy)
                 time.sleep(0.5)
                 alpha_pid = command_file("export TAB=alpha; printf '%s' $$", 'controls-alpha')
                 shortcut(ord('t'))
@@ -414,8 +527,9 @@ def main():
                 assert command_file("printf '%s:%s' $$ \"$TAB\"", 'controls-after-search') == gamma_pid + ':gamma'
                 print('Compact literal scrollback search, Enter/Shift+Enter navigation, and Escape return to the same shell: passed')
                 def focus_window(current):
+                    X.XMapWindow(dpy, current); X.XSync(dpy, 0)
                     X.XMoveWindow(dpy, current, 0, 0); X.XRaiseWindow(dpy, current)
-                    X.XSetInputFocus(dpy, current, 1, 0); X.XFlush(dpy); time.sleep(0.3)
+                    focus_native_window(current); X.XFlush(dpy); time.sleep(0.3)
                 def drag(x, y, target_x, target_y):
                     XT.XTestFakeMotionEvent(dpy, -1, x, y, 0)
                     XT.XTestFakeButtonEvent(dpy, 1, 1, 0); X.XFlush(dpy); time.sleep(0.15)
@@ -624,7 +738,7 @@ finally:
             settings = wait_until(lambda: next(iter(find_windows("Opterm Settings")), None))
             X.XMoveWindow(dpy, settings, 0, 0)
             X.XMapWindow(dpy, settings)
-            X.XSetInputFocus(dpy, settings, 1, 0)
+            focus_native_window(settings)
             X.XFlush(dpy)
             time.sleep(0.4)
             return settings
@@ -637,7 +751,7 @@ finally:
             type_text('\n')
             time.sleep(0.2)
         def terminal_focus():
-            X.XSetInputFocus(dpy, window, 1, 0); X.XFlush(dpy); time.sleep(0.2)
+            focus_native_window(window); X.XFlush(dpy); time.sleep(0.2)
         config = Path(env['OPTERM_CONFIG_DIR']) / 'settings.toml'
         backup = Path(env['OPTERM_RECOVERY_DIR']) / 'last-valid-settings.toml'
         before_settings = Path(state.name) / 'before-settings'
@@ -690,7 +804,7 @@ finally:
         # Invalid live edits leave both the last-valid backup and current appearance intact.
         settings_window = wait_until(lambda: next(iter(find_windows("Opterm Settings")), None))
         X.XMoveWindow(dpy, settings_window, 0, 0)
-        X.XSetInputFocus(dpy, settings_window, 1, 0); X.XFlush(dpy); time.sleep(0.3)
+        focus_native_window(settings_window); X.XFlush(dpy); time.sleep(0.3)
         assert backup.read_bytes() == good
         click(100, 496)  # Load recovery into draft.
         assert config.read_text() == 'invalid = [', 'Restore silently overwrote the file'
@@ -910,7 +1024,7 @@ finally:
         shortcut(ord('n'))
         second = wait_until(lambda: next(iter(set(find_windows()) - before), None))
         X.XMapWindow(dpy, second); X.XSync(dpy, 0); time.sleep(0.3)
-        X.XSetInputFocus(dpy, second, 1, 0); X.XFlush(dpy); time.sleep(0.4)
+        focus_native_window(second); X.XFlush(dpy); time.sleep(0.4)
         new_pid = command_file("export NEW_WINDOW=alive; printf '%s' $$", 'window-pid')
         assert new_pid not in {left_pid, right_pid, bottom_pid}
         close_window(window)
@@ -941,7 +1055,7 @@ finally:
         restored_windows = find_windows()
         seen = set()
         for current in restored_windows:
-            X.XMapWindow(dpy, current); X.XSetInputFocus(dpy, current, 1, 0); X.XFlush(dpy); time.sleep(0.35)
+            X.XMapWindow(dpy, current); focus_native_window(current); X.XFlush(dpy); time.sleep(0.35)
             pid = command_file("printf '%s' $$", 'restored-window-' + str(current))
             seen.add(pid)
             if pid == right_pid:

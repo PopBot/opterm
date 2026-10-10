@@ -70,6 +70,8 @@ impl Dialog {
             egui::ViewportId::from_hash_of("opterm-settings"),
             egui::ViewportBuilder::default()
                 .with_title("Opterm Settings")
+                .with_app_id("dev.opterm.Opterm")
+                .with_icon(crate::app_icon())
                 .with_inner_size([620.0, 540.0])
                 .with_min_inner_size([580.0, 460.0]),
             |ctx, class| {
@@ -290,34 +292,72 @@ fn appearance(ui: &mut egui::Ui, a: &mut Appearance, fonts: &[String]) {
 }
 
 fn shortcuts(ui: &mut egui::Ui, draft: &mut Settings) {
+    use opterm::shortcuts::Action::*;
+    ui.set_width(ui.available_width());
+    ui.horizontal(|ui| {
+        ui.heading("Keyboard shortcuts");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Reset defaults").clicked() {
+                draft.shortcuts = opterm::shortcuts::Shortcuts::default();
+            }
+        });
+    });
+    ui.weak("Edit a binding, then Save. Examples: Ctrl+Shift+T or Cmd+T.");
+    ui.add_space(6.0);
+    for (heading, actions) in [
+        (
+            "Windows & tabs",
+            &[NewTab, NewWindow, Close, NextTab, PreviousTab][..],
+        ),
+        ("Terminal", &[Copy, Paste, Search, Settings][..]),
+        (
+            "Split panes",
+            &[
+                SplitRight, SplitBelow, Maximize, FocusLeft, FocusRight, FocusUp, FocusDown,
+            ][..],
+        ),
+        (
+            "Resize panes",
+            &[ResizeLeft, ResizeRight, ResizeUp, ResizeDown][..],
+        ),
+    ] {
+        ui.separator();
+        ui.label(egui::RichText::new(heading).strong());
+        let binding_width = (ui.available_width() - 280.0).clamp(220.0, 300.0);
+        for &action in actions {
+            ui.push_id(action.label(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    ui.label(action.label());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let binding = draft.shortcuts.0.entry(action).or_default();
+                        if ui
+                            .add_sized([54.0, 26.0], egui::Button::new("Clear"))
+                            .clicked()
+                        {
+                            binding.clear();
+                        }
+                        ui.add_sized(
+                            [binding_width, 26.0],
+                            egui::TextEdit::singleline(binding)
+                                .font(egui::TextStyle::Monospace)
+                                .hint_text("Disabled"),
+                        );
+                    });
+                });
+            });
+        }
+        ui.add_space(6.0);
+    }
+    if let Err(error) = draft.shortcuts.validate() {
+        ui.colored_label(Color32::from_rgb(190, 85, 55), error.to_string());
+    }
+    ui.weak("Clear an occupied shortcut before reassigning it. Empty bindings are disabled.");
+    ui.separator();
+    ui.label(egui::RichText::new("Clipboard").strong());
     ui.checkbox(
         &mut draft.copy_on_select,
         "Copy selected text automatically",
     );
-    ui.weak(
-        "Ctrl+C interrupts the terminal unless deliberately rebound. Empty bindings are disabled.",
-    );
-    ui.horizontal(|ui| {
-        if ui.button("Reset shortcuts").clicked() {
-            draft.shortcuts = opterm::shortcuts::Shortcuts::default();
-        }
-        ui.weak("Example: Ctrl+Shift+T or Cmd+T");
-    });
-    egui::Grid::new("editable-shortcuts")
-        .spacing([12.0, 4.0])
-        .show(ui, |ui| {
-            for action in opterm::shortcuts::Action::ALL {
-                ui.label(action.label());
-                let binding = draft.shortcuts.0.entry(action).or_default();
-                ui.add(egui::TextEdit::singleline(binding).desired_width(190.0));
-                if ui.small_button("Unbind").clicked() {
-                    binding.clear();
-                }
-                ui.end_row();
-            }
-        });
-    if let Err(error) = draft.shortcuts.validate() {
-        ui.colored_label(Color32::from_rgb(190, 85, 55), error.to_string());
-    }
-    ui.weak("To reassign an occupied shortcut, explicitly Unbind its previous action before Save.");
+    ui.weak("Ctrl+C interrupts the terminal unless deliberately rebound.");
 }

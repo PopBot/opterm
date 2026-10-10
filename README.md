@@ -95,7 +95,7 @@ In **Settings → Profiles**, create shell/agent presets with executable, argume
 
 In **Settings → Shortcuts & clipboard**, edit action bindings, explicitly unbind conflicting actions, or reset platform defaults. Save applies bindings immediately and preserves the settings backup. Copy-on-select is optional and initially off. F1–F20 and standard modified keys reach terminal programs. Mouse-aware programs receive clicks, dragging and wheel input; hold Shift to select or scroll locally. Native paste preserves text and line breaks without adding Enter.
 
-Press Cmd+F (macOS) or Ctrl+Shift+F (Linux/Windows) for compact literal scrollback search. Enter finds the next match; Shift+Enter finds the previous one; Escape closes the row. Drag tabs to reorder them. Right-click a tab to move its entire split layout to another window, or drag it outside the window to create one. Transfers preserve running processes and manual names; a failed or timed-out handoff keeps the source tab.
+Press Cmd+F (macOS) or Ctrl+Shift+F (Linux/Windows) for compact literal scrollback search. Enter finds the next match; Shift+Enter finds the previous one; Escape closes the row. Each tab has an **×** close button and a right-click menu for rename, split, close, and window movement. Closing detaches its sessions. Drag tabs to reorder them; hover another tab briefly to activate it, then drag to a terminal pane edge to snap the dragged tab beside it. Right-click a tab to move its entire split layout to another window, or drag it outside the window to create one. Transfers preserve running processes and manual names; a failed or timed-out handoff keeps the source tab.
 
 In **Settings → Sessions & history**, control saved-output recording and retention, stage a custom settings/cache folder for the next launch, or clear disposable cache. The recovery backup remains separate. The session menu can pause/resume recording without stopping work. See the [storage guide](docs/user-guide.md#saved-output-and-storage-folders).
 
@@ -108,6 +108,10 @@ The service stays running when all windows close. Rebuilding the app leaves an e
 ```
 
 Use an installed Rust toolchain and a native desktop session. The first build downloads dependencies. Linux X11 and focused native Wayland checks pass. Native macOS/Windows build and PTY coverage is tracked in the [platform guide](docs/platform-validation.md); their desktop acceptance remains pending. Reboot, logout, or service failure can end work; this prototype does not replay old commands or restore lost processes.
+
+## Application icon and installation
+
+Run `python3 scripts/install_linux.py` after a release build to add **Opterm** to the Linux application menu. macOS packages include **Opterm.app**; Windows packages include a Start-menu installation script and an embedded executable icon. See [app icons and installation](docs/app-icons.md) for custom artwork and native platform steps.
 
 ## Project documents
 

@@ -72,3 +72,11 @@ Native Wayland rendering, keyboard input, saved layouts and desktop-crash contin
 The focused everyday-controls native check also passes literal search with Enter/Shift+Enter, tab dragging, drag-out and explicit cross-window transfers with preserved names, split focus and four original shell PIDs. [Controls screenshot](screenshots/prototype-controls-linux.png).
 
 Measured performance fixes and unsigned native archives are documented in the [performance report](performance.md) and [distribution guide](distribution.md). These are prototype results, with full raw samples and their limits; no overall speed superiority or production certification is claimed.
+
+## 2026-10-10 tab and desktop-identity correction
+
+Implemented per-tab × close, expanded right-click menus, a horizontally scrolling tab strip, insertion markers, hover activation, and pane-edge snapping of existing tab layouts. Close removes the view while service-owned processes remain available. Terminal focus is locked against UI Tab/arrow/Escape traversal when no dialog/menu/search is active. Settings retain keyboard traversal. The shortcut editor now has left-side action titles and equal-width binding fields/right-side Clear buttons.
+
+The focused Linux X11 checks exercise repeated real Bash completion followed by Enter, inactive-tab close, tab reorder including the empty end of the strip, hover-to-activate snap preview and merge, context-menu close of split views, and detached-process preservation. Existing window-transfer checks also pass with original process IDs and split metadata. Screenshots: [shortcuts](screenshots/shortcuts-after.png), [tab controls](screenshots/tabs-after.png), [snap preview](screenshots/tabs-snap-preview.png), [context menu](screenshots/tabs-menu.png).
+
+Native window icons use a shared embedded PNG. The packaging pipeline includes Linux icon/launcher installation, macOS ICNS/bundle declarations, and Windows executable resources/Start-menu installation. Linux validation includes the X11 icon property and application identity plus desktop-file registration. These new macOS/Windows assets and scripts still require native checks; earlier package results do not verify this change. Wayland cross-window pointer transfers cannot use absolute positions and have a menu alternative. See [app icons and installation](app-icons.md).

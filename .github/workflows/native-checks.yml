@@ -82,6 +82,10 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 5
         run: python3 scripts/smoke_gui.py
+      - name: Linux native tab, completion, shortcuts and icon checks
+        if: runner.os == 'Linux'
+        timeout-minutes: 2
+        run: python3 scripts/smoke_gui.py --tabs-only
       - name: Linux native storage and recording checks
         if: runner.os == 'Linux'
         timeout-minutes: 3

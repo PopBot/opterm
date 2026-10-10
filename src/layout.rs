@@ -53,6 +53,32 @@ impl Layout {
             _ => false,
         }
     }
+    /// Dock an existing tab beside a pane without creating replacement sessions.
+    pub fn dock(&mut self, target: u64, layout: &Self, axis: Axis, before: bool, id: u64) -> bool {
+        match self {
+            Self::Pane(pane) if *pane == target => {
+                let old = self.clone();
+                let (first, second) = if before {
+                    (layout.clone(), old)
+                } else {
+                    (old, layout.clone())
+                };
+                *self = Self::Split {
+                    id,
+                    axis,
+                    ratio: 0.5,
+                    first: Box::new(first),
+                    second: Box::new(second),
+                };
+                true
+            }
+            Self::Split { first, second, .. } => {
+                first.dock(target, layout, axis, before, id)
+                    || second.dock(target, layout, axis, before, id)
+            }
+            _ => false,
+        }
+    }
     pub fn retain(self, ids: &[u64]) -> Option<Self> {
         match self {
             Self::Pane(id) => ids.contains(&id).then_some(Self::Pane(id)),
@@ -197,6 +223,29 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn docking_a_split_tab_preserves_sessions_and_can_collapse_again() {
+        for axis in [Axis::Right, Axis::Below] {
+            for before in [true, false] {
+                let mut target = Layout::Pane(1);
+                target.split(1, 2, Axis::Below);
+                let mut source = Layout::Pane(3);
+                source.split(3, 4, Axis::Right);
+                assert!(!target.dock(99, &source, axis, before, 5));
+                assert_eq!(target.ids(), vec![1, 2]);
+                assert!(target.dock(2, &source, axis, before, 5));
+                assert_eq!(
+                    target.ids(),
+                    if before {
+                        vec![1, 3, 4, 2]
+                    } else {
+                        vec![1, 2, 3, 4]
+                    }
+                );
+                assert_eq!(target.retain(&[1, 2]).unwrap().ids(), vec![1, 2]);
+            }
+        }
+    }
     #[test]
     fn closing_nested_panes_collapses_only_their_branch() {
         let mut layout = Layout::Pane(1);

@@ -132,11 +132,18 @@ def main():
             with (contents / 'Info.plist').open('wb') as file:
                 plistlib.dump({'CFBundleName': 'Opterm', 'CFBundleDisplayName': 'Opterm',
                               'CFBundleIdentifier': 'dev.opterm.prototype', 'CFBundleExecutable': 'opterm',
-                              'CFBundlePackageType': 'APPL', 'CFBundleVersion': version,
+                              'CFBundlePackageType': 'APPL', 'CFBundleIconFile': 'opterm.icns', 'CFBundleVersion': version,
                               'CFBundleShortVersionString': version, 'NSHighResolutionCapable': True}, file)
         else:
             executable = root / binary.name
             resources = root
+        if system == 'macos':
+            shutil.copyfile(ROOT / 'assets/icons/opterm.icns', resources / 'opterm.icns')
+        elif system == 'linux':
+            shutil.copyfile(ROOT / 'scripts/install_linux.py', root / 'install.py')
+            shutil.copyfile(ROOT / 'assets/icons/window-icon.png', root / 'opterm.png')
+        elif system == 'windows':
+            shutil.copyfile(ROOT / 'scripts/install_windows.ps1', root / 'install.ps1')
         shutil.copyfile(binary, executable)
         executable.chmod(0o755)
         for filename in ('LICENSE-MIT', 'LICENSE-APACHE'):

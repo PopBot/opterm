@@ -115,7 +115,7 @@ These are defaults; saved custom bindings take precedence. **Alt** is the Option
 | Resize nearest divider | Ctrl+Shift+Alt+Arrow | Cmd+Alt+Shift+Arrow |
 | Maximize / restore pane | Ctrl+Shift+Enter | Cmd+Shift+Enter |
 
-Open **Settings → Shortcuts & clipboard** to change a binding. Enter a chord such as `Ctrl+Shift+T` or `Cmd+D`; the settings editor uses `Comma` for the comma key. Clear a binding to disable it. Duplicate action bindings are rejected: explicitly unbind the other action before reassignment. **Reset shortcuts** restores platform defaults in the draft; **Save** applies them, while **Cancel** discards the change. Next tab and Previous tab are available for assignment but have no default binding.
+Open **Settings → Shortcuts & clipboard** to change a binding. Enter a chord such as `Ctrl+Shift+T` or `Cmd+D`; the settings editor uses `Comma` for the comma key. Clear a binding to disable it. Duplicate action bindings are rejected: explicitly unbind the other action before reassignment. **Reset defaults** restores platform defaults in the draft; **Save** applies them, while **Cancel** discards the change. Next tab and Previous tab are available for assignment but have no default binding.
 
 ## Appearance settings
 
@@ -203,3 +203,15 @@ Rebuild normally with `cargo build --release`. Appearance/shortcut changes can a
 ```
 
 `--stop-service` ends **all** sessions in the selected service. To test separately, `OPTERM_STATE_DIR` can select an isolated service directory. Keep the same value across its desktop launches to reconnect. Settings and backup locations have separate development overrides; consult [settings documentation](settings-foundation.md) before changing them.
+
+## Tab close, drag and snap
+
+Click the **×** at the right of a tab to close its entire view, including splits. Its running sessions remain available from **Sessions**. Closing an inactive tab keeps the current tab active. Right-click anywhere on a tab for rename, splits, close, or movement to another window.
+
+Drag a tab within the strip to reorder it; the blue line marks its insertion position. The strip scrolls horizontally when tabs no longer fit. Drag outside the window to create another window, or drop over another open Opterm window to move the tab there. Cross-window drop targets rely on absolute window positions, which Wayland does not provide; use the right-click menu there.
+
+To snap one tab beside another, select the destination tab and drag the other tab onto an edge of its terminal pane. Alternatively, hold the dragged tab over its destination tab for about half a second to activate it first. A shaded half-pane preview marks left, right, top or bottom placement. Releasing merges the existing sessions and any source splits into the destination layout. It does not start replacement shells. Dropping in the middle cancels the snap.
+
+Plain **Tab** and **Shift+Tab** stay terminal input while a terminal is active; the toolbar does not use them for focus navigation. Tab navigation in Settings stays available.
+
+For the custom app icon and application-menu installation, see [app icons and desktop installation](app-icons.md).

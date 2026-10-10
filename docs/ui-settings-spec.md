@@ -147,3 +147,9 @@ Q74 accepts Clear cache, limited to recreatable data. It preserves settings, pro
 ## Next step
 
 The interview is closed with Q54-Q83 accepted. No more product decision rounds are required before the terminal-first prototype in [the prototype plan](prototype-plan.md). Resolve routine reversible UI details there and bring back only material scope changes or evidence-based technical tradeoffs. The first working slice uses a provisional egui/eframe renderer. See [prototype status](prototype-status.md); final toolkit selection and remaining native coverage still require evidence.
+
+## Accepted correction: tab controls and application identity (2026-10-10)
+
+The user's later terminal-control corrections supersede earlier smaller slices: every tab has a right-side × close button and a right-click menu; closing the whole tab detaches all its views and keeps its sessions available. Plain Tab remains terminal completion input. Tabs can be reordered, moved between windows, and snapped beside a destination pane using an edge preview. Hovering a destination tab activates it during a drag. Cross-window pointer placement depends on native window coordinates; retain menu movement where those coordinates are unavailable.
+
+The shortcuts editor groups actions and uses left-aligned command names, equal-width binding inputs, and right-aligned Clear buttons. Native app icon assets and application launchers are part of this development slice; signing, publication and complete macOS/Windows desktop validation remain separate. See [app icons](app-icons.md) and [iTerm2-inspired recommendations](iterm2-roadmap.md); the recommendations are exploratory, not a new parity acceptance contract.

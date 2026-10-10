@@ -1,6 +1,6 @@
 # Unsigned prototype packages
 
-Opterm packages are native builds, not installers. Download the archive and checksum from the successful **Native checks** workflow's `opterm-<platform>-<architecture>` artifact at https://github.com/PopBot/opterm/actions/workflows/native-checks.yml. GitHub may wrap the files in an artifact ZIP; extract that first. Artifact downloads require GitHub access and expire after 14 days. No GitHub release is published.
+Opterm packages contain native builds and per-user launcher installation scripts. See [app icons and installation](app-icons.md) to install Opterm in your application menu, Applications folder, or Start menu. Download the archive and checksum from the successful **Native checks** workflow's `opterm-<platform>-<architecture>` artifact at https://github.com/PopBot/opterm/actions/workflows/native-checks.yml. GitHub may wrap the files in an artifact ZIP; extract that first. Artifact downloads require GitHub access and expire after 14 days. No GitHub release is published.
 
 | Platform | Package | Run after extraction |
 |---|---|---|

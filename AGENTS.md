@@ -8,3 +8,4 @@
 - Mark development slices and unverified platform coverage honestly. Never claim detach/crash survival until the independent service owns the sessions.
 - Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all-targets` for Rust changes. Use `python3 scripts/smoke_gui.py` for focused Linux GUI checks when the renderer/input changes and prerequisites are available.
 - Track Cargo.lock. Do not publish, push, or claim benchmark superiority without supporting work and authorization.
+- Work on chats or tasks in a new Git Branch or worktree. Make sure to add and commit in Git (with detailed commit messages). When complete with work, locally merge to `main` and push that to origin.

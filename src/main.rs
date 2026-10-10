@@ -152,6 +152,7 @@ struct App {
     search: Option<Search>,
     search_token: u64,
     dragged_tab: Option<u64>,
+    drag_hover: Option<(u64, Instant)>,
     outgoing: Option<(u64, transfers::Pending)>,
     incoming: Vec<transfers::Offer>,
     transfer_poll: Instant,
@@ -165,6 +166,17 @@ struct App {
     window_title: String,
     caret_activity: BTreeMap<u64, (Option<(usize, usize)>, Instant)>,
     click_edit: Option<(u64, usize, usize)>,
+}
+
+fn app_icon() -> Arc<egui::IconData> {
+    static ICON: std::sync::OnceLock<Arc<egui::IconData>> = std::sync::OnceLock::new();
+    ICON.get_or_init(|| {
+        Arc::new(
+            eframe::icon_data::from_png_bytes(include_bytes!("../assets/icons/window-icon.png"))
+                .expect("bundled application icon"),
+        )
+    })
+    .clone()
 }
 
 fn install_font(ctx: &egui::Context, database: &fontdb::Database, family: &str) -> bool {
@@ -310,6 +322,7 @@ impl App {
             search: None,
             search_token: 0,
             dragged_tab: None,
+            drag_hover: None,
             outgoing: None,
             incoming: Vec::new(),
             transfer_poll: Instant::now(),
@@ -854,27 +867,43 @@ impl App {
         }
     }
     fn detach_tab(&mut self) {
-        if self.outgoing.as_ref().is_some_and(|(key, _)| {
-            self.tabs
-                .get(self.active)
-                .is_some_and(|tab| tab.key == *key)
-        }) {
+        if let Some(tab) = self.tabs.get(self.active) {
+            self.close_tab(tab.key);
+        }
+    }
+    fn close_tab(&mut self, key: u64) {
+        if self
+            .outgoing
+            .as_ref()
+            .is_some_and(|(moving, _)| *moving == key)
+        {
             return;
         }
-        if let Some(tab) = self.tabs.get(self.active)
-            && let Some(client) = &self.client
-        {
-            for id in tab.layout.ids() {
-                self.missing.remove(&id);
-                if !self.panes.contains_key(&id) {
-                    continue;
+        let Some(index) = self.tabs.iter().position(|tab| tab.key == key) else {
+            return;
+        };
+        let ids = self.tabs[index].layout.ids();
+        for id in &ids {
+            if self.panes.contains_key(id) {
+                let Some(client) = &self.client else { return };
+                if let Err(error) = client.send(Request::Detach(*id)) {
+                    self.error = Some(format!("Close tab: {error:#}"));
+                    return;
                 }
-                if let Err(error) = client.send(Request::Detach(id)) {
-                    self.error = Some(format!("{error:#}"));
-                    break;
-                }
+                self.leaving.push(*id);
             }
         }
+        let active = self.tabs.get(self.active).map(|tab| tab.key);
+        self.tabs.remove(index);
+        for id in ids {
+            self.missing.remove(&id);
+            self.panes.remove(&id);
+        }
+        self.active = active
+            .and_then(|key| self.tabs.iter().position(|tab| tab.key == key))
+            .unwrap_or(index.min(self.tabs.len().saturating_sub(1)));
+        self.search = None;
+        self.rename = None;
     }
     fn maximize(&mut self) {
         if self.outgoing.as_ref().is_some_and(|(key, _)| {
@@ -954,7 +983,7 @@ impl App {
         }
     }
 
-    fn tab_bar(&mut self, ctx: &egui::Context) {
+    fn tab_bar(&mut self, ctx: &egui::Context) -> Vec<(u64, Rect)> {
         let destinations = self.destinations.clone();
         let own = self
             .saved_layout
@@ -962,6 +991,8 @@ impl App {
             .map(|store| store.window.id.clone())
             .unwrap_or_default();
         let mut move_request = None;
+        let mut close_request = None;
+        let mut split_request = None;
         let mut tab_rects = Vec::new();
         egui::TopBottomPanel::top("tabs")
             .exact_height(30.0)
@@ -976,94 +1007,127 @@ impl App {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    for (index, tab) in self.tabs.iter().enumerate() {
-                        let automatic_title = self.pane_title(tab.focused);
-                        let provider = self
-                            .panes
-                            .get(&tab.focused)
-                            .and_then(|pane| pane.info())
-                            .and_then(|info| info.provider);
-                        let manual_name = tab.name.clone();
-                        let title =
-                            manual_name
-                                .as_deref()
-                                .unwrap_or(if automatic_title.is_empty() {
-                                    "Shell"
-                                } else {
-                                    &automatic_title
-                                });
-                        let mut title: String =
-                            title.chars().filter(|c| !c.is_control()).take(30).collect();
-                        if self
-                            .outgoing
-                            .as_ref()
-                            .is_some_and(|(key, _)| *key == tab.key)
-                        {
-                            title.push_str(" · moving");
-                        }
-                        let response = ui.add(
-                            provider_ui::button(ui, provider, title)
-                                .fill(if index == self.active {
-                                    if ctx.style().visuals.dark_mode {
-                                        Color32::from_rgb(66, 66, 68)
-                                    } else {
-                                        Color32::from_rgb(248, 248, 249)
+                    egui::ScrollArea::horizontal()
+                        .id_salt("terminal-tab-strip")
+                        .max_width((ui.available_width() - 180.0).max(80.0))
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                for (index, tab) in self.tabs.iter().enumerate() {
+                                    let automatic_title = self.pane_title(tab.focused);
+                                    let provider = self
+                                        .panes
+                                        .get(&tab.focused)
+                                        .and_then(|pane| pane.info())
+                                        .and_then(|info| info.provider);
+                                    let manual_name = tab.name.clone();
+                                    let title =
+                                        manual_name
+                                            .as_deref()
+                                            .unwrap_or(if automatic_title.is_empty() {
+                                                "Shell"
+                                            } else {
+                                                &automatic_title
+                                            });
+                                    let mut title: String =
+                                        title.chars().filter(|c| !c.is_control()).take(24).collect();
+                                    if self
+                                        .outgoing
+                                        .as_ref()
+                                        .is_some_and(|(key, _)| *key == tab.key)
+                                    {
+                                        title.push_str(" · moving");
                                     }
-                                } else {
-                                    Color32::TRANSPARENT
-                                })
-                                .corner_radius(4)
-                                .sense(Sense::click_and_drag()),
-                        );
-                        tab_rects.push((tab.key, response.rect));
-                        if response.drag_started() && self.outgoing.is_none() {
-                            self.dragged_tab = Some(tab.key);
-                        }
-                        if response.clicked() {
-                            self.active = index;
-                            self.search = None;
-                        }
-                        response.context_menu(|ui| {
-                            if ui
-                                .add_enabled(
-                                    self.outgoing.is_none(),
-                                    egui::Button::new("Move to new window"),
-                                )
-                                .clicked()
-                            {
-                                move_request = Some((tab.key, None));
-                                ui.close();
-                            }
-                            for window in destinations.iter().filter(|window| window.id != own) {
-                                let name = window
-                                    .tabs
-                                    .get(window.active)
-                                    .and_then(|tab| tab.name.clone())
-                                    .unwrap_or_else(|| {
-                                        format!("Window {}", &window.id[window.id.len() - 6..])
+                                    let moving = self.outgoing.as_ref().is_some_and(|(key, _)| *key == tab.key);
+                                    let fill = if index == self.active {
+                                        if ctx.style().visuals.dark_mode { Color32::from_rgb(66, 66, 68) }
+                                        else { Color32::from_rgb(248, 248, 249) }
+                                    } else { Color32::TRANSPARENT };
+                                    let group = ui.push_id(tab.key, |ui| {
+                                        egui::Frame::new().fill(fill).corner_radius(4).show(ui, |ui| {
+                                            ui.spacing_mut().item_spacing.x = 0.0;
+                                            ui.horizontal(|ui| {
+                                                let label = ui.add(provider_ui::button(ui, provider, title)
+                                                    .frame(false).sense(Sense::click_and_drag()));
+                                                let close = ui.add_enabled(!moving, egui::Button::new("×")
+                                                    .frame(false).min_size(Vec2::new(22.0, 20.0)))
+                                                    .on_hover_text("Close tab · sessions stay available in Sessions");
+                                                if close.clicked() { close_request = Some(tab.key); }
+                                                (label, close)
+                                            }).inner
+                                        })
+                                    }).inner;
+                                    let (response, close_response) = group.inner;
+                                    let menu_response = response.clone().union(close_response);
+                                    tab_rects.push((tab.key, group.response.rect));
+                                    if response.drag_started() && self.outgoing.is_none() {
+                                        self.dragged_tab = Some(tab.key);
+                                    }
+                                    if response.clicked() {
+                                        self.active = index;
+                                        self.search = None;
+                                    }
+                                    menu_response.context_menu(|ui| {
+                                        if ui
+                                            .add_enabled(
+                                                self.outgoing.is_none(),
+                                                egui::Button::new("Move to new window"),
+                                            )
+                                            .clicked()
+                                        {
+                                            move_request = Some((tab.key, None));
+                                            ui.close();
+                                        }
+                                        for window in destinations.iter().filter(|window| window.id != own) {
+                                            let name = window
+                                                .tabs
+                                                .get(window.active)
+                                                .and_then(|tab| tab.name.clone())
+                                                .unwrap_or_else(|| {
+                                                    format!("Window {}", &window.id[window.id.len() - 6..])
+                                                });
+                                            if ui
+                                                .add_enabled(
+                                                    self.outgoing.is_none(),
+                                                    egui::Button::new(format!("Move to {name}")),
+                                                )
+                                                .clicked()
+                                            {
+                                                move_request = Some((tab.key, Some(window.id.clone())));
+                                                ui.close();
+                                            }
+                                        }
+                                        ui.separator();
+                                        if ui.add_enabled(!moving, egui::Button::new("Rename tab…")).clicked() {
+                                            self.rename = Some(index);
+                                            self.rename_text = tab.name.clone().unwrap_or_default();
+                                            ui.close();
+                                        }
+                                        for (label, axis) in [("Split right", Axis::Right), ("Split below", Axis::Below)] {
+                                            if ui.add_enabled(!moving, egui::Button::new(label)).clicked() {
+                                                split_request = Some((index, axis));
+                                                ui.close();
+                                            }
+                                        }
+                                        ui.separator();
+                                        if ui.add_enabled(!moving, egui::Button::new("Close tab")).clicked() {
+                                            close_request = Some(tab.key);
+                                            ui.close();
+                                        }
+                                        ui.weak("Closed sessions stay available in Sessions.");
                                     });
-                                if ui
-                                    .add_enabled(
-                                        self.outgoing.is_none(),
-                                        egui::Button::new(format!("Move to {name}")),
-                                    )
-                                    .clicked()
-                                {
-                                    move_request = Some((tab.key, Some(window.id.clone())));
-                                    ui.close();
+                                    if response.double_clicked()
+                                        && self
+                                            .outgoing
+                                            .as_ref()
+                                            .is_none_or(|(key, _)| *key != tab.key)
+                                    {
+                                        self.rename = Some(index);
+                                        self.rename_text = tab.name.clone().unwrap_or_default();
+                                    }
                                 }
-                            }
+                            });
                         });
-                        if response.double_clicked()
-                            && self
-                                .outgoing
-                                .as_ref()
-                                .is_none_or(|(key, _)| *key != tab.key)
-                        {
-                            self.rename = Some(index);
-                            self.rename_text = tab.name.clone().unwrap_or_default();
-                        }
-                    }
                     let plus = ui
                         .button("+")
                         .on_hover_text("New default-profile tab; right-click to choose a profile");
@@ -1240,53 +1304,176 @@ impl App {
                     });
                 });
             });
-        if let Some(key) = self.dragged_tab
-            && ctx.input(|input| input.pointer.any_released())
-        {
-            self.dragged_tab = None;
-            if let Some(pos) =
-                ctx.input(|input| input.pointer.interact_pos().or(input.pointer.latest_pos()))
-            {
-                if let Some((target, _)) = tab_rects.iter().find(|(_, rect)| rect.contains(pos)) {
-                    if let (Some(source), Some(target)) = (
-                        self.tabs.iter().position(|tab| tab.key == key),
-                        self.tabs.iter().position(|tab| tab.key == *target),
-                    ) {
-                        let active = self.tabs.get(self.active).map(|tab| tab.key);
-                        let tab = self.tabs.remove(source);
-                        self.tabs.insert(target, tab);
-                        self.active = active
-                            .and_then(|key| self.tabs.iter().position(|tab| tab.key == key))
-                            .unwrap_or(0);
-                        if let Err(error) = self.save_layout(ctx) {
-                            self.error = Some(error.to_string());
-                        }
-                    }
-                } else if !ctx.viewport_rect().contains(pos) {
-                    let origin = ctx
-                        .input(|input| input.viewport().inner_rect.map(|rect| rect.min))
-                        .unwrap_or(Pos2::ZERO);
-                    let world = origin + pos.to_vec2();
-                    let target = destinations
-                        .iter()
-                        .filter(|window| window.id != own)
-                        .find(|window| {
-                            window.position.is_some_and(|position| {
-                                Rect::from_min_size(
-                                    Pos2::new(position[0], position[1]),
-                                    Vec2::new(window.size[0], window.size[1]),
-                                )
-                                .contains(world)
-                            })
-                        })
-                        .map(|window| window.id.clone());
-                    move_request = Some((key, target));
-                }
-            }
+        if let Some((index, axis)) = split_request {
+            self.active = index;
+            self.split(axis);
+        }
+        if let Some(key) = close_request {
+            self.close_tab(key);
         }
         if let Some((key, target)) = move_request {
             self.move_tab(key, target, ctx);
         }
+        tab_rects
+    }
+
+    fn tab_drag(&mut self, ctx: &egui::Context, tab_rects: &[(u64, Rect)]) {
+        let Some(key) = self.dragged_tab else { return };
+        let Some(pos) = ctx.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos())) else {
+            return;
+        };
+        let hover = tab_rects
+            .iter()
+            .find(|(other, rect)| *other != key && rect.contains(pos))
+            .map(|(key, _)| *key);
+        if let Some(hover) = hover {
+            if self.drag_hover.is_none_or(|(key, _)| key != hover) {
+                self.drag_hover = Some((hover, Instant::now()));
+            }
+            if self
+                .drag_hover
+                .is_some_and(|(_, since)| since.elapsed() >= Duration::from_millis(450))
+            {
+                if let Some(index) = self.tabs.iter().position(|tab| tab.key == hover)
+                    && self.active != index
+                {
+                    self.active = index;
+                    ctx.request_repaint();
+                    if !ctx.input(|input| input.pointer.any_released()) {
+                        return;
+                    }
+                }
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(50));
+            }
+        } else {
+            self.drag_hover = None;
+        }
+        let active = self.tabs.get(self.active).map(|tab| tab.key);
+        let snap = if active != Some(key) {
+            self.pane_rects.iter().find_map(|(id, rect)| {
+                if !rect.contains(pos) {
+                    return None;
+                }
+                let edges = [
+                    (pos.x - rect.left(), Axis::Right, true),
+                    (rect.right() - pos.x, Axis::Right, false),
+                    (pos.y - rect.top(), Axis::Below, true),
+                    (rect.bottom() - pos.y, Axis::Below, false),
+                ];
+                let (distance, axis, before) =
+                    edges.into_iter().min_by(|a, b| a.0.total_cmp(&b.0))?;
+                (distance < rect.width().min(rect.height()) * 0.25)
+                    .then_some((*id, *rect, axis, before))
+            })
+        } else {
+            None
+        };
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("tab-drop-preview"),
+        ));
+        if let Some((_, mut rect, axis, before)) = snap {
+            match (axis, before) {
+                (Axis::Right, true) => rect.max.x = rect.center().x,
+                (Axis::Right, false) => rect.min.x = rect.center().x,
+                (Axis::Below, true) => rect.max.y = rect.center().y,
+                (Axis::Below, false) => rect.min.y = rect.center().y,
+            }
+            painter.rect_filled(rect, 4, Color32::from_rgba_unmultiplied(90, 160, 230, 65));
+            painter.rect_stroke(
+                rect,
+                4,
+                (2.0, Color32::from_rgb(90, 160, 230)),
+                egui::StrokeKind::Inside,
+            );
+        } else if pos.y <= 30.0 && pos.x >= 0.0 {
+            let slot = tab_rects
+                .iter()
+                .filter(|(id, _)| *id != key)
+                .find(|(_, rect)| pos.x < rect.center().x);
+            let x = slot
+                .map(|(_, rect)| rect.left())
+                .unwrap_or_else(|| tab_rects.last().map_or(6.0, |(_, rect)| rect.right()));
+            painter.line_segment(
+                [Pos2::new(x, 4.0), Pos2::new(x, 26.0)],
+                (2.0, Color32::from_rgb(90, 160, 230)),
+            );
+        }
+        if !ctx.input(|i| i.pointer.any_released()) {
+            return;
+        }
+        self.dragged_tab = None;
+        self.drag_hover = None;
+        if let Some((pane, _, axis, before)) = snap {
+            if let Some(source) = self.tabs.iter().position(|tab| tab.key == key) {
+                let layout = self.tabs[source].layout.clone();
+                let focused = self.tabs[source].focused;
+                if self.tabs[self.active]
+                    .layout
+                    .dock(pane, &layout, axis, before, self.next_local)
+                {
+                    self.next_local -= 1;
+                    self.tabs[self.active].focused = focused;
+                    self.tabs[self.active].maximized = false;
+                    self.tabs.remove(source);
+                    self.active = self
+                        .tabs
+                        .iter()
+                        .position(|tab| Some(tab.key) == active)
+                        .unwrap_or(0);
+                }
+            }
+        } else if pos.y <= 30.0 && ctx.viewport_rect().contains(pos) {
+            if let Some(source) = self.tabs.iter().position(|tab| tab.key == key) {
+                let tab = self.tabs.remove(source);
+                let target = self
+                    .tabs
+                    .iter()
+                    .position(|tab| {
+                        tab_rects
+                            .iter()
+                            .find(|(key, _)| *key == tab.key)
+                            .is_some_and(|(_, rect)| pos.x < rect.center().x)
+                    })
+                    .unwrap_or(self.tabs.len());
+                self.tabs.insert(target, tab);
+                self.active = self
+                    .tabs
+                    .iter()
+                    .position(|tab| Some(tab.key) == active)
+                    .unwrap_or(0);
+            }
+        } else if !ctx.viewport_rect().contains(pos) {
+            let own = self
+                .saved_layout
+                .as_ref()
+                .map(|store| store.window.id.as_str())
+                .unwrap_or_default();
+            let origin = ctx
+                .input(|i| i.viewport().inner_rect.map(|rect| rect.min))
+                .unwrap_or(Pos2::ZERO);
+            let world = origin + pos.to_vec2();
+            let target = self
+                .destinations
+                .iter()
+                .filter(|window| window.id != own)
+                .find(|window| {
+                    window.position.is_some_and(|position| {
+                        Rect::from_min_size(
+                            Pos2::new(position[0], position[1]),
+                            Vec2::new(window.size[0], window.size[1]),
+                        )
+                        .contains(world)
+                    })
+                })
+                .map(|window| window.id.clone());
+            self.move_tab(key, target, ctx);
+        }
+        if let Err(error) = self.save_layout(ctx) {
+            self.error = Some(error.to_string());
+        }
+        self.ui_input_consumed = true;
     }
 
     fn terminal(&mut self, ctx: &egui::Context) {
@@ -1369,6 +1556,30 @@ impl App {
     ) {
         let session = &self.panes[&id];
         let response = ui.interact(rect, egui::Id::new(("pane", id)), Sense::click_and_drag());
+        if self
+            .tabs
+            .get(self.active)
+            .is_some_and(|tab| tab.focused == id)
+            && self.settings_dialog.is_none()
+            && self.search.is_none()
+            && self.rename.is_none()
+            && self.error.is_none()
+            && self.end_session.is_none()
+            && !egui::Popup::is_any_open(ctx)
+        {
+            ctx.memory_mut(|memory| {
+                memory.request_focus(response.id);
+                memory.set_focus_lock_filter(
+                    response.id,
+                    egui::EventFilter {
+                        tab: true,
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        escape: true,
+                    },
+                );
+            });
+        }
         let appearance = &self.settings.current.appearance;
         let font = FontId::monospace(appearance.font_size);
         let width = ui.fonts_mut(|fonts| fonts.glyph_width(&font, 'M'));
@@ -2084,7 +2295,7 @@ impl App {
                 None
             },
         );
-        if self.ui_input_consumed {
+        if self.ui_input_consumed || self.dragged_tab.is_some() {
             return;
         }
         if self.search.is_some() {
@@ -2442,9 +2653,10 @@ impl eframe::App for App {
         self.ui_input_consumed = false;
         self.sync_tabs();
         self.poll_transfers(ctx);
-        self.tab_bar(ctx);
+        let tab_rects = self.tab_bar(ctx);
         self.search_bar(ctx);
         self.terminal(ctx);
+        self.tab_drag(ctx, &tab_rects);
         self.events(ctx);
         self.show_settings(ctx);
         if let Some(index) = self.rename {
@@ -2617,6 +2829,8 @@ fn main() {
     }
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Opterm")
+        .with_app_id("dev.opterm.Opterm")
+        .with_icon(app_icon())
         .with_inner_size([1000.0, 680.0])
         .with_min_inner_size([320.0, 160.0]);
     if restored && let Some(store) = &saved_layout {
