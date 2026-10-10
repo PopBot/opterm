@@ -171,31 +171,58 @@ fn install_font(ctx: &egui::Context, database: &fontdb::Database, family: &str) 
     } else {
         "DejaVu Sans Mono"
     };
-    if let Some(id) = database.query(&fontdb::Query {
+    let mut fonts = egui::FontDefinitions::default();
+    let primary = database.query(&fontdb::Query {
         families: &[fontdb::Family::Name(preferred), fontdb::Family::Monospace],
         ..fontdb::Query::default()
-    }) {
-        return database
-            .with_face_data(id, |bytes, face_index| {
-                let mut fonts = egui::FontDefinitions::default();
+    });
+    let fallback = cjk_fallback(database);
+    for (name, id) in [("system-monospace", primary), ("system-cjk", fallback)] {
+        if let Some(id) = id {
+            database.with_face_data(id, |bytes, face_index| {
                 fonts.font_data.insert(
-                    "system-monospace".into(),
+                    name.into(),
                     egui::FontData {
                         index: face_index,
                         ..egui::FontData::from_owned(bytes.to_vec())
                     }
                     .into(),
                 );
-                fonts
+                let family = fonts
                     .families
                     .get_mut(&egui::FontFamily::Monospace)
-                    .unwrap()
-                    .insert(0, "system-monospace".into());
-                ctx.set_fonts(fonts);
-            })
-            .is_some();
+                    .unwrap();
+                if name == "system-monospace" {
+                    family.insert(0, name.into());
+                } else {
+                    family.push(name.into());
+                }
+            });
+        }
     }
-    false
+    ctx.set_fonts(fonts);
+    primary.is_some()
+}
+
+fn cjk_fallback(database: &fontdb::Database) -> Option<fontdb::ID> {
+    // Load one installed outline face rather than every system font.
+    [
+        "Noto Sans CJK SC",
+        "Noto Sans CJK JP",
+        "PingFang SC",
+        "Hiragino Sans",
+        "Microsoft YaHei",
+        "Yu Gothic",
+        "WenQuanYi Zen Hei",
+        "Droid Sans Fallback",
+    ]
+    .iter()
+    .find_map(|name| {
+        database.query(&fontdb::Query {
+            families: &[fontdb::Family::Name(name)],
+            ..fontdb::Query::default()
+        })
+    })
 }
 
 impl App {
@@ -2424,5 +2451,25 @@ fn main() {
     ) {
         eprintln!("{error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod font_tests {
+    use super::*;
+    #[test]
+    fn installed_cjk_fallback_supplies_terminal_glyphs() {
+        let mut database = fontdb::Database::new();
+        database.load_system_fonts();
+        if cjk_fallback(&database).is_none() {
+            return;
+        }
+        let ctx = egui::Context::default();
+        install_font(&ctx, &database, "System monospace");
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            ctx.fonts_mut(|fonts| {
+                assert!(fonts.has_glyphs(&FontId::monospace(14.0), "中文日本語"));
+            });
+        });
     }
 }
