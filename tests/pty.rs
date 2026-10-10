@@ -93,7 +93,14 @@ fn terminal_status_queries_receive_replies() {
         || {},
     )
     .unwrap();
-    wait_for(&session, |s| s.text().contains("1b 5b 31 3b 31 52"));
+    // BSD and GNU od use different spacing for the same byte sequence.
+    wait_for(&session, |s| {
+        s.text()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+            .contains("1b5b313b3152")
+    });
 }
 
 #[test]
