@@ -1,12 +1,13 @@
 //! Window-local split geometry; session ownership remains in the service.
 use eframe::egui::{self, Color32, Rect, Sense};
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Axis {
     Right,
     Below,
 }
 
+#[derive(Clone)]
 pub enum Layout {
     Pane(u64),
     Split {

@@ -106,6 +106,7 @@ impl Dialog {
                     if let Some(message) = self.profiles.show(ui, &mut self.draft) { self.message = Some(message); }
                 }
                 _ => {
+                    ui.checkbox(&mut self.draft.restore_layout, "Restore saved windows, tabs and splits on startup");
                     ui.label("Closing the desktop leaves shells and agents running in the session service.");
                     ui.label("Live scrollback: 10,000 lines per session. Saved history is not implemented yet.");
                     ui.weak("Appearance saves do not restart sessions or the service.");

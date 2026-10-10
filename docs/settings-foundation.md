@@ -1,6 +1,6 @@
 # Settings foundation
 
-Open **… → Settings…**, or press **Ctrl+Shift+,** (Linux/Windows) / **Cmd+,** (macOS). Settings use a separate native window with the approved four sections. Appearance and Profiles are editable; the other sections describe current behavior and clearly identify controls still to come. See [profile and theme controls](profiles-themes.md).
+Open **… → Settings…**, or press **Ctrl+Shift+,** (Linux/Windows) / **Cmd+,** (macOS). Settings use a separate native window with the approved four sections. Appearance, Profiles, and startup layout restoration are editable; the other sections describe current behavior and clearly identify controls still to come. See [profile and theme controls](profiles-themes.md).
 
 The appearance draft supports system/dark/light application chrome, installed monospace fonts, font size, independent horizontal/vertical padding, line height, and outline/bar/underline cursor. **Save** validates, writes, and applies it to the open terminal. **Cancel** or closing the settings window discards the draft. Shells, agents, and the session service keep running. Terminal ANSI/256/RGB colors are preserved; profile color themes are configured under Profiles.
 
@@ -29,7 +29,7 @@ line_height = 1.2
 cursor = "outline"
 ```
 
-Chrome accepts `system`, `dark`, or `light`; cursor accepts `outline`, `bar`, or `underline`. Font size is 8–40 logical pixels, padding 0–32, line height 1–2. Version-1 appearance-only settings migrate in memory and remain untouched until Save. Profiles/themes use version 2. Unknown fields, unsupported versions, nonfinite/out-of-range values, and files larger than 64 KiB are rejected. An unavailable font falls back to an available system monospace face. Saved settings are global across desktop instances; each instance checks external edits about once a second. The preview illustrates spacing with the currently installed application font; a newly selected family takes effect on Save.
+Chrome accepts `system`, `dark`, or `light`; cursor accepts `outline`, `bar`, or `underline`. Font size is 8–40 logical pixels, padding 0–32, line height 1–2. Version-1 appearance-only settings migrate in memory and remain untouched until Save. Profiles/themes and the optional `restore_layout` startup flag use version 2; older version-2 files default to restoration enabled. Unknown fields, unsupported versions, nonfinite/out-of-range values, and files larger than 64 KiB are rejected. An unavailable font falls back to an available system monospace face. Saved settings are global across desktop instances; each instance checks external edits about once a second. The preview illustrates spacing with the currently installed application font; a newly selected family takes effect on Save.
 
 ## Last-valid backup behavior
 

@@ -59,6 +59,7 @@ pub struct Settings {
     pub workspace_directory: String,
     pub profiles: Vec<Profile>,
     pub themes: Vec<Theme>,
+    pub restore_layout: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -69,6 +70,7 @@ impl Default for Settings {
             workspace_directory: String::new(),
             profiles: Vec::new(),
             themes: Vec::new(),
+            restore_layout: true,
         }
     }
 }
@@ -288,7 +290,7 @@ fn read_file(path: &Path) -> Result<Vec<u8>> {
     );
     Ok(bytes)
 }
-fn private_dir(path: &Path) -> Result<()> {
+pub(crate) fn private_dir(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt, MetadataExt};
@@ -337,7 +339,7 @@ fn private_dir(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn prepare(path: &Path, bytes: &[u8]) -> Result<NamedTempFile> {
+pub(crate) fn prepare(path: &Path, bytes: &[u8]) -> Result<NamedTempFile> {
     let parent = path.parent().context("Settings path has no parent")?;
     private_dir(parent)?;
     if path.exists() {
@@ -352,7 +354,7 @@ fn prepare(path: &Path, bytes: &[u8]) -> Result<NamedTempFile> {
     temp.as_file().sync_all()?;
     Ok(temp)
 }
-fn commit(temp: NamedTempFile, path: &Path) -> Result<()> {
+pub(crate) fn commit(temp: NamedTempFile, path: &Path) -> Result<()> {
     temp.persist(path)
         .map_err(|e| e.error)
         .with_context(|| format!("Replace {}", path.display()))?;

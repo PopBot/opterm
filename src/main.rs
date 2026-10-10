@@ -1,17 +1,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod input;
-mod layout;
 mod profiles_ui;
 mod settings_ui;
-use layout::{Axis, Layout};
+use opterm::{
+    layout::{Axis, Layout},
+    layouts::{self, Node, SavedTab, SessionRef},
+};
 
 use eframe::egui::{self, Align2, Color32, FontId, Key, Pos2, Rect, Sense, Vec2};
 use opterm::{
     profiles::Theme,
     service::{
         self, Request,
-        client::{Client, RemoteSession},
+        client::{Client, Reconnect, RemoteSession},
     },
     settings::{Appearance, Chrome, Cursor, Paths, Store},
     terminal::BACKGROUND,
@@ -61,6 +63,50 @@ enum Placement {
     Split { tab: u64, pane: u64, axis: Axis },
 }
 
+struct Missing {
+    session: SessionRef,
+    title: String,
+}
+
+fn restore_node(
+    node: &Node,
+    instance: &str,
+    views: &[u64],
+    missing: &mut BTreeMap<u64, Missing>,
+    next: &mut u64,
+) -> Layout {
+    let local = *next;
+    *next -= 1;
+    match node {
+        Node::Pane { session, title } => {
+            if session.matches(instance, views) {
+                Layout::Pane(session.id)
+            } else {
+                missing.insert(
+                    local,
+                    Missing {
+                        session: session.clone(),
+                        title: title.clone(),
+                    },
+                );
+                Layout::Pane(local)
+            }
+        }
+        Node::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => Layout::Split {
+            id: local,
+            axis: *axis,
+            ratio: *ratio,
+            first: Box::new(restore_node(first, instance, views, missing, next)),
+            second: Box::new(restore_node(second, instance, views, missing, next)),
+        },
+    }
+}
+
 struct App {
     tabs: Vec<Tab>,
     client: Option<Arc<Client>>,
@@ -81,6 +127,9 @@ struct App {
     font_names: Vec<String>,
     applied_appearance: Appearance,
     applied_themes: Vec<Theme>,
+    saved_layout: Option<layouts::Store>,
+    missing: BTreeMap<u64, Missing>,
+    layout_poll: Instant,
 }
 
 fn install_font(ctx: &egui::Context, database: &fontdb::Database, family: &str) -> bool {
@@ -124,10 +173,17 @@ impl App {
     fn new(
         cc: &eframe::CreationContext<'_>,
         program: Vec<String>,
-        restore: bool,
+        settings: Store,
+        saved_layout: Option<layouts::Store>,
+        restored: bool,
+        fresh: bool,
+        notice: Option<String>,
     ) -> anyhow::Result<Self> {
-        let paths = Paths::discover()?;
-        let settings = Store::load(paths);
+        let restored_window = if restored {
+            saved_layout.as_ref().map(|store| store.window.clone())
+        } else {
+            None
+        };
         let mut font_database = fontdb::Database::new();
         font_database.load_system_fonts();
         let mut font_names: Vec<String> = font_database
@@ -158,12 +214,15 @@ impl App {
             end_session: None,
             active: 0,
             program,
-            error: None,
+            error: notice,
             rename: None,
             rename_text: String::new(),
             paste_requested: false,
             applied_appearance: settings.current.appearance.clone(),
             applied_themes: Vec::new(),
+            saved_layout,
+            missing: BTreeMap::new(),
+            layout_poll: Instant::now(),
             settings_dialog: None,
             settings_poll: Instant::now(),
             settings,
@@ -186,22 +245,148 @@ impl App {
                 launch.profile.executable = program.clone();
                 launch.profile.arguments = app.program[1..].to_vec();
             }
-            Client::open(&path, launch, !app.program.is_empty(), restore, move || {
-                notify.request_repaint()
-            })
+            let reconnect = if let Some(window) = &restored_window {
+                Reconnect::Saved(window.sessions())
+            } else if fresh {
+                Reconnect::Fresh
+            } else {
+                Reconnect::Detached
+            };
+            Client::open_with(
+                &path,
+                launch,
+                !app.program.is_empty(),
+                reconnect,
+                restored_window.is_none(),
+                move || notify.request_repaint(),
+            )
         }) {
             Ok(client) => app.client = Some(client),
             Err(error) => app.error = Some(format!("{error:#}")),
         }
         app.apply_appearance(&cc.egui_ctx);
-        if app.client.as_ref().is_some_and(|client| !client.profiles) {
+        if app
+            .client
+            .as_ref()
+            .is_some_and(|client| !client.profiles || client.instance.is_empty())
+        {
             let previous = app.settings.notice.take().unwrap_or_default();
             app.settings.notice = Some(format!(
-                "{previous} Running service predates profiles and themes; existing work stays running. Finish its sessions before stopping the service, or use an isolated OPTERM_STATE_DIR to try the new features."
+                "{previous} Running service predates saved layouts or profiles/themes; existing work stays running. Finish its sessions before stopping the service, or use an isolated OPTERM_STATE_DIR to try the new features."
             ));
+        }
+        if let Some(window) = &restored_window {
+            app.restore_tabs(window);
         }
         app.sync_tabs();
         Ok(app)
+    }
+
+    fn restore_tabs(&mut self, window: &layouts::Window) {
+        let (instance, views) = self
+            .client
+            .as_ref()
+            .map(|client| (client.instance.clone(), client.view_updates().0))
+            .unwrap_or_default();
+        let mut next = u64::MAX;
+        for tab in &window.tabs {
+            let layout = restore_node(&tab.layout, &instance, &views, &mut self.missing, &mut next);
+            let ids = layout.ids();
+            self.tabs.push(Tab {
+                key: ids[0],
+                layout,
+                focused: ids[tab.focused],
+                name: tab.name.clone(),
+                maximized: tab.maximized,
+            });
+        }
+        self.active = window.active;
+    }
+    fn pane_title(&self, id: u64) -> String {
+        self.panes
+            .get(&id)
+            .map(|pane| pane.title())
+            .unwrap_or_else(|| {
+                self.missing
+                    .get(&id)
+                    .map(|pane| format!("{} · unavailable", pane.title))
+                    .unwrap_or_default()
+            })
+    }
+    fn capture_node(&self, layout: &Layout, instance: &str) -> Node {
+        match layout {
+            Layout::Pane(id) => {
+                let (session, title) = match self.missing.get(id) {
+                    Some(pane) => (pane.session.clone(), pane.title.clone()),
+                    None => (
+                        SessionRef {
+                            instance: instance.into(),
+                            id: *id,
+                        },
+                        self.pane_title(*id)
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .take(128)
+                            .collect(),
+                    ),
+                };
+                Node::Pane { session, title }
+            }
+            Layout::Split {
+                axis,
+                ratio,
+                first,
+                second,
+                ..
+            } => Node::Split {
+                axis: *axis,
+                ratio: *ratio,
+                first: Box::new(self.capture_node(first, instance)),
+                second: Box::new(self.capture_node(second, instance)),
+            },
+        }
+    }
+    fn save_layout(&mut self, ctx: &egui::Context) -> anyhow::Result<()> {
+        let Some(store) = &self.saved_layout else {
+            return Ok(());
+        };
+        let mut window = store.window.clone();
+        let instance = self
+            .client
+            .as_ref()
+            .map(|client| client.instance.as_str())
+            .unwrap_or_default();
+        window.active = self.active.min(self.tabs.len().saturating_sub(1));
+        window.tabs = self
+            .tabs
+            .iter()
+            .map(|tab| SavedTab {
+                name: tab.name.clone(),
+                focused: tab
+                    .layout
+                    .ids()
+                    .iter()
+                    .position(|id| *id == tab.focused)
+                    .unwrap_or(0),
+                maximized: tab.maximized,
+                layout: self.capture_node(&tab.layout, instance),
+            })
+            .collect();
+        ctx.input(|input| {
+            let viewport = input.viewport();
+            window.maximized = viewport.maximized.unwrap_or(false);
+            if !window.maximized && !viewport.minimized.unwrap_or(false) {
+                let rect = viewport.inner_rect.unwrap_or_else(|| ctx.viewport_rect());
+                window.size = [
+                    rect.width().clamp(320.0, 16384.0),
+                    rect.height().clamp(160.0, 16384.0),
+                ];
+                if let Some(rect) = viewport.outer_rect {
+                    window.position = Some([rect.min.x, rect.min.y]);
+                }
+            }
+        });
+        self.saved_layout.as_mut().unwrap().save(window)
     }
 
     fn open_settings(&mut self) {
@@ -297,6 +482,11 @@ impl App {
             return;
         };
         let (views, created) = client.view_updates();
+        let retained: Vec<u64> = views
+            .iter()
+            .copied()
+            .chain(self.missing.keys().copied())
+            .collect();
         self.panes.retain(|id, _| views.contains(id));
         for &id in &views {
             self.panes.entry(id).or_insert_with(|| client.session(id));
@@ -306,8 +496,8 @@ impl App {
             .tabs
             .drain(..)
             .filter_map(|mut tab| {
-                if tab.layout.ids().iter().any(|id| !views.contains(id)) {
-                    tab.layout = tab.layout.retain(&views)?;
+                if tab.layout.ids().iter().any(|id| !retained.contains(id)) {
+                    tab.layout = tab.layout.retain(&retained)?;
                 }
                 if !tab.layout.contains(tab.focused) {
                     tab.focused = tab.layout.ids()[0];
@@ -445,6 +635,26 @@ impl App {
         }
     }
     fn detach(&mut self) {
+        if let Some(tab) = self.tabs.get(self.active)
+            && self.missing.remove(&tab.focused).is_some()
+        {
+            let ids: Vec<u64> = tab
+                .layout
+                .ids()
+                .into_iter()
+                .filter(|id| *id != tab.focused)
+                .collect();
+            if let Some(layout) = tab.layout.clone().retain(&ids) {
+                let tab = &mut self.tabs[self.active];
+                tab.focused = ids[0];
+                tab.layout = layout;
+                tab.maximized = false;
+            } else {
+                self.tabs.remove(self.active);
+                self.active = self.active.min(self.tabs.len().saturating_sub(1));
+            }
+            return;
+        }
         if let Some(session) = self.focused_session()
             && let Some(client) = &self.client
             && let Err(error) = client.send(Request::Detach(session.id))
@@ -457,6 +667,10 @@ impl App {
             && let Some(client) = &self.client
         {
             for id in tab.layout.ids() {
+                self.missing.remove(&id);
+                if !self.panes.contains_key(&id) {
+                    continue;
+                }
                 if let Err(error) = client.send(Request::Detach(id)) {
                     self.error = Some(format!("{error:#}"));
                     break;
@@ -543,11 +757,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     for (index, tab) in self.tabs.iter().enumerate() {
-                        let automatic_title = self
-                            .panes
-                            .get(&tab.focused)
-                            .map(|s| s.title())
-                            .unwrap_or_default();
+                        let automatic_title = self.pane_title(tab.focused);
                         let manual_name = tab.name.clone();
                         let title =
                             manual_name
@@ -745,7 +955,7 @@ impl App {
                 let panes = self.pane_rects.clone();
                 for (id, rect) in panes {
                     let focused = self.tabs[self.active].focused == id;
-                    let background = self.panes[&id].screen().background;
+                    let background = self.panes.get(&id).map(|pane| pane.screen().background).unwrap_or(BACKGROUND);
                     ui.painter().rect_filled(
                         rect,
                         0,
@@ -764,16 +974,16 @@ impl App {
                         a.padding_x.min((rect.width() - 1.0).max(0.0) / 2.0),
                         a.padding_y.min((rect.height() - 1.0).max(0.0) / 2.0),
                     );
-                    self.paint_pane(ui, ctx, id, rect.shrink2(inset), focused);
+                    if self.panes.contains_key(&id) { self.paint_pane(ui, ctx, id, rect.shrink2(inset), focused); }
+                    else { ui.painter().text(rect.min + Vec2::splat(12.0), Align2::LEFT_TOP,
+                        "Session unavailable. Its commands were not rerun.\nUse + for new work, or close this pane.", FontId::monospace(14.0), Color32::LIGHT_GRAY); }
                 }
             });
         if let Some(client) = &self.client {
             client.visible(self.pane_rects.iter().map(|(id, _)| *id).collect());
         }
-        if let Some(tab) = self.tabs.get(self.active)
-            && let Some(session) = self.panes.get(&tab.focused)
-        {
-            let automatic = session.title();
+        if let Some(tab) = self.tabs.get(self.active) {
+            let automatic = self.pane_title(tab.focused);
             let title = tab.name.as_deref().unwrap_or(if automatic.is_empty() {
                 "Shell"
             } else {
@@ -1196,9 +1406,11 @@ impl eframe::App for App {
                                     .then(|| self.rename_text.trim().to_owned());
                                 if let Some(session) = self.panes.get(&tab.layout.ids()[0]) {
                                     match session.rename(name.clone()) {
-                                        Ok(()) => tab.name = name,
+                                        Ok(()) => tab.name = name.clone(),
                                         Err(error) => self.error = Some(format!("{error:#}")),
                                     }
+                                } else {
+                                    tab.name = name;
                                 }
                             }
                             self.rename = None;
@@ -1240,6 +1452,16 @@ impl eframe::App for App {
                     }
                 });
         }
+        if self.layout_poll.elapsed() >= Duration::from_secs(1)
+            || ctx.input(|i| i.viewport().close_requested())
+        {
+            self.layout_poll = Instant::now();
+            if let Err(error) = self.save_layout(ctx) {
+                self.error = Some(format!(
+                    "Save layout: {error:#}. Running work is unchanged; retry after fixing the state folder."
+                ));
+            }
+        }
     }
 }
 
@@ -1263,23 +1485,98 @@ fn main() {
         println!("Session service stopped; its sessions were ended.");
         return;
     }
-    let restore = !program.first().is_some_and(|s| s == "--new-window");
-    if !restore {
+    let mut fresh = program
+        .first()
+        .is_some_and(|s| s == "--new-window" || s == "--no-restore");
+    if fresh {
         program.remove(0);
     }
+    let requested = if program.first().is_some_and(|s| s == "--restore-window") {
+        program.remove(0);
+        if program.is_empty() {
+            eprintln!("Missing saved window ID");
+            std::process::exit(1);
+        }
+        Some(program.remove(0))
+    } else {
+        None
+    };
     if program.first().is_some_and(|s| s == "--") {
         program.remove(0);
+    }
+    fresh |= !program.is_empty();
+    let settings = match Paths::discover() {
+        Ok(paths) => Store::load(paths),
+        Err(error) => {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+    };
+    let restore = settings.current.restore_layout && !fresh;
+    let boot = service::state_dir()
+        .and_then(|path| layouts::Store::open(&path, requested.as_deref(), restore));
+    let (saved_layout, restored, mut notice, others) = match boot {
+        Ok(Some(boot)) => (Some(boot.store), boot.restored, boot.notice, boot.others),
+        Ok(None) => return,
+        Err(error) => (
+            None,
+            false,
+            Some(format!(
+                "Could not restore/save layouts: {error:#}. Saved files were left untouched."
+            )),
+            Vec::new(),
+        ),
+    };
+    for id in others {
+        let result = std::env::current_exe().and_then(|exe| {
+            Command::new(exe)
+                .args(["--restore-window", &id])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .spawn()
+        });
+        match result {
+            Ok(mut child) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Err(error) => {
+                notice = Some(format!(
+                    "Could not reopen a saved window: {error}. Its layout is still saved."
+                ))
+            }
+        }
+    }
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("Opterm")
+        .with_inner_size([1000.0, 680.0])
+        .with_min_inner_size([320.0, 160.0]);
+    if restored && let Some(store) = &saved_layout {
+        viewport = viewport
+            .with_inner_size(store.window.size)
+            .with_maximized(store.window.maximized);
+        if let Some(position) = store.window.position {
+            viewport = viewport.with_position(position);
+        }
     }
     if let Err(error) = eframe::run_native(
         "Opterm",
         eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_title("Opterm")
-                .with_inner_size([1000.0, 680.0])
-                .with_min_inner_size([320.0, 160.0]),
+            viewport,
             ..Default::default()
         },
-        Box::new(move |cc| Ok(Box::new(App::new(cc, program, restore)?))),
+        Box::new(move |cc| {
+            Ok(Box::new(App::new(
+                cc,
+                program,
+                settings,
+                saved_layout,
+                restored,
+                fresh || !restore,
+                notice,
+            )?))
+        }),
     ) {
         eprintln!("{error}");
         std::process::exit(1);

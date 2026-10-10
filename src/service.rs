@@ -99,6 +99,8 @@ pub enum Reply {
         pid: u32,
         #[serde(default)]
         profiles: bool,
+        #[serde(default)]
+        instance: String,
     },
     List(Vec<Info>),
     Snapshot(Box<Snapshot>),
@@ -183,6 +185,7 @@ fn endpoint(path: &Path) -> Result<Name<'static>> {
 pub struct Connection {
     stream: LocalSocketStream,
     pub profiles: bool,
+    pub instance: String,
 }
 impl Connection {
     pub fn connect(path: &Path) -> Result<Self> {
@@ -190,14 +193,17 @@ impl Connection {
         let mut connection = Self {
             stream: LocalSocketStream::connect(endpoint(&path)?)?,
             profiles: false,
+            instance: String::new(),
         };
         match connection.call(Request::Hello(VERSION))? {
             Reply::Hello {
                 version: VERSION,
                 profiles,
+                instance,
                 ..
             } => {
                 connection.profiles = profiles;
+                connection.instance = instance;
                 Ok(connection)
             }
             _ => bail!("Unsupported session service version; existing work was left running"),
@@ -324,6 +330,7 @@ impl Managed {
 struct Hub {
     sessions: BTreeMap<u64, Managed>,
     next_id: u64,
+    instance: String,
 }
 
 fn create(hub: &mut Hub, client: u64, launch: Launch, configured: bool) -> Result<Reply> {
@@ -356,6 +363,7 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
                 version: VERSION,
                 pid: std::process::id(),
                 profiles: true,
+                instance: hub.instance.clone(),
             });
         }
         Request::List => {
@@ -529,7 +537,10 @@ pub fn serve(path: &Path) -> Result<()> {
         options.security_descriptor(SecurityDescriptor::deserialize(&sddl)?)
     };
     let listener = options.create_sync()?;
-    let hub = Arc::new(Mutex::new(Hub::default()));
+    let hub = Arc::new(Mutex::new(Hub {
+        instance: crate::profiles::fresh_id("service")?,
+        ..Hub::default()
+    }));
     let next_client = AtomicU64::new(1);
     let running = Arc::new(AtomicBool::new(true));
     while running.load(Ordering::Relaxed) {
@@ -544,6 +555,7 @@ pub fn serve(path: &Path) -> Result<()> {
         let client = next_client.fetch_add(1, Ordering::Relaxed);
         let hub = hub.clone();
         let running = running.clone();
+        let instance = hub.lock().unwrap().instance.clone();
         thread::spawn(move || {
             // A version handshake precedes operations on every connection.
             let hello = read_frame::<Request>(&mut stream);
@@ -556,6 +568,7 @@ pub fn serve(path: &Path) -> Result<()> {
                     version: VERSION,
                     pid: std::process::id(),
                     profiles: true,
+                    instance,
                 },
             )
             .is_err()

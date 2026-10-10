@@ -14,6 +14,8 @@ import time
 import tempfile
 import zlib
 import tomllib
+import json
+import socket
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / 'target'
@@ -503,6 +505,79 @@ def main():
         close_window(second)
         wait_until(lambda: not find_windows())
         print('New Window starts a fresh shell and survives closing the first window: passed')
+        # Reopen both saved windows, preserving each window's tabs/splits and focus.
+        layout_folder = Path(env['OPTERM_STATE_DIR']) / 'layouts'
+        documents = sorted(layout_folder.glob('*.json'))
+        assert len(documents) == 2, documents
+        expected = {json.loads(path.read_text())['id']: json.loads(path.read_text()) for path in documents}
+        split_doc = next(doc for doc in expected.values() if len(doc['tabs']) > 1)
+        # Give the closed window a distinctive manual name and bounds to check on restore.
+        split_doc['tabs'][split_doc['active']]['name'] = 'Restored splits'
+        split_doc['size'] = [900, 620]; split_doc['position'] = [30, 40]
+        (layout_folder / (split_doc['id'] + '.json')).write_text(json.dumps(split_doc))
+        def title_of(w):
+            value = C.c_void_p()
+            X.XFetchName(dpy, w, C.byref(value))
+            title = C.string_at(value).decode() if value else ''
+            if value: X.XFree(value)
+            return title
+        app = subprocess.Popen([str(binary)], cwd=ROOT, env=env)
+        wait_until(lambda: len(find_windows()) == 2)
+        time.sleep(0.6)
+        restored_windows = find_windows()
+        seen = set()
+        for current in restored_windows:
+            X.XMapWindow(dpy, current); X.XSetInputFocus(dpy, current, 1, 0); X.XFlush(dpy); time.sleep(0.35)
+            pid = command_file("printf '%s' $$", 'restored-window-' + str(current))
+            seen.add(pid)
+            if pid == right_pid:
+                restored_path = layout_folder / (split_doc['id'] + '.json')
+                wait_until(lambda: json.loads(restored_path.read_text())['size'] == [900, 620])
+                assert json.loads(restored_path.read_text())['position'] == [30, 40]
+                assert json.loads(restored_path.read_text())['tabs'][split_doc['active']]['layout'] == split_doc['tabs'][split_doc['active']]['layout']
+                assert 'Restored splits' in title_of(current), title_of(current)
+                assert command_file("printf '%s' \"$PANE\"", 'restored-pane-state') == 'right'
+                shortcut(0xff51)
+                assert command_file("printf '%s:%s' $$ \"$PANE\"", 'restored-left') == left_pid + ':left'
+                shortcut(0xff53)
+                assert command_file("printf '%s' $$", 'restored-right') == right_pid
+                # Save temporary maximize state while retaining the underlying split.
+                shortcut(0xff0d)
+                wait_until(lambda: json.loads((layout_folder / (split_doc['id'] + '.json')).read_text())['tabs'][split_doc['active']]['maximized'])
+            elif pid == new_pid:
+                assert command_file("printf '%s' \"$NEW_WINDOW\"", 'restored-new-window') == 'alive'
+            else: raise AssertionError(('Restored a replacement shell', pid, seen))
+        assert seen == {right_pid, new_pid}, seen
+        print('Two saved windows restore tab names, nested splits, focused panes, and original shell state: passed')
+        print('Restored layout screenshot:', screenshot(display, 'prototype-layouts-linux.png'))
+        for current in restored_windows: close_window(current)
+        wait_until(lambda: not find_windows())
+        app.wait(timeout=5)
+        before_restart = {path.name: json.loads(path.read_text())['tabs'] for path in documents}
+        # Restarting the service must leave placeholders instead of replaying old commands.
+        subprocess.run([str(binary), '--stop-service'], env=env, check=True, stdout=subprocess.DEVNULL)
+        app = subprocess.Popen([str(binary)], cwd=ROOT, env=env)
+        wait_until(lambda: len(find_windows()) == 2)
+        time.sleep(1.3)
+        for path in documents:
+            doc = json.loads(path.read_text())
+            assert doc['tabs'], 'Unavailable work was silently discarded'
+            assert doc['tabs'] == before_restart[path.name], 'Unavailable references/layout were replaced'
+        with socket.socket(socket.AF_UNIX) as probe:
+            probe.connect(str(Path(env['OPTERM_STATE_DIR']) / 'service.sock'))
+            def call(request):
+                data = json.dumps(request).encode(); probe.sendall(struct.pack('<I', len(data)) + data)
+                def receive(count):
+                    data = b''
+                    while len(data) < count:
+                        chunk = probe.recv(count - len(data)); assert chunk; data += chunk
+                    return data
+                length = struct.unpack('<I', receive(4))[0]
+                return json.loads(receive(length))
+            call({'Hello': 1})
+            assert call('List') == {'List': []}, 'Restoration created replacement shells after service restart'
+        print('Service restart restores unavailable panes without replaying commands: passed')
+
 
     except Exception:
         if dpy: print('Failure screenshot:', screenshot(display, 'gui-failure.png'))

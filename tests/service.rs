@@ -506,3 +506,79 @@ fn older_service_keeps_existing_work_when_profiles_are_rejected() {
     );
     assert!(client.take_error().is_none());
 }
+
+#[test]
+fn saved_references_reattach_only_selected_work_and_never_reuse_ids_after_restart() {
+    use opterm::{
+        layouts::SessionRef,
+        profiles::Launch,
+        service::client::{Client, Reconnect},
+    };
+    let mut service = Service::start();
+    let mut connection = service.connect();
+    let original = connection.instance.clone();
+    assert!(!original.is_empty());
+    assert_eq!(service.connect().instance, original);
+    let first = shell(&mut connection);
+    let second = shell(&mut connection);
+    write(
+        &mut connection,
+        first,
+        "export LAYOUT_STATE=retained; printf 'LAYOUT_READY\\n'\n",
+    );
+    wait_screen(&mut connection, first, "LAYOUT_READY");
+    connection.call(Request::Detach(first)).unwrap();
+    let refs = vec![SessionRef {
+        instance: original.clone(),
+        id: first,
+    }];
+    let client = Client::open_with(
+        service.directory.path(),
+        Launch::legacy(&[]),
+        false,
+        Reconnect::Saved(refs.clone()),
+        false,
+        || {},
+    )
+    .unwrap();
+    assert_eq!(client.view_updates().0, vec![first]);
+    assert!(client.session(first).controlled());
+    assert_eq!(list(&mut connection).len(), 2);
+    assert!(!client.view_updates().0.contains(&second));
+    client
+        .send(Request::Write {
+            id: first,
+            bytes: b"printf 'LAYOUT:%s\\n' \"$LAYOUT_STATE\"\n".to_vec(),
+        })
+        .unwrap();
+    connection.call(Request::Attach(first)).unwrap();
+    wait_screen(&mut connection, first, "LAYOUT:retained");
+    drop(client);
+    service.child.kill().unwrap();
+    service.child.wait().unwrap();
+    service.child = Service::spawn(service.directory.path());
+    let mut restarted = service.connect();
+    assert_ne!(restarted.instance, original);
+    let reused = shell(&mut restarted);
+    assert_eq!(reused, first);
+    let client = Client::open_with(
+        service.directory.path(),
+        Launch::legacy(&[]),
+        false,
+        Reconnect::Saved(refs),
+        false,
+        || {},
+    )
+    .unwrap();
+    assert!(client.view_updates().0.is_empty());
+    assert_eq!(list(&mut restarted).len(), 1);
+    let screen = snapshot(
+        restarted
+            .call(Request::View {
+                id: reused,
+                since: None,
+            })
+            .unwrap(),
+    );
+    assert!(!screen.screen.text().contains("LAYOUT_READY"));
+}

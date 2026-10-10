@@ -1,7 +1,7 @@
 //! UI-facing cache and one background IPC worker. No socket reads on the UI thread.
 use super::{Connection, Info, Reply, Request, Snapshot};
-use crate::profiles::Launch;
 use crate::terminal::Screen;
+use crate::{layouts::SessionRef, profiles::Launch};
 use alacritty_terminal::term::TermMode;
 use anyhow::{Result, bail, ensure};
 use std::{
@@ -51,11 +51,19 @@ impl State {
     }
 }
 
+pub enum Reconnect {
+    All,
+    Detached,
+    Saved(Vec<SessionRef>),
+    Fresh,
+}
+
 pub struct Client {
     sender: SyncSender<(Request, usize)>,
     state: Arc<Mutex<State>>,
     queued: Arc<AtomicUsize>,
     pub profiles: bool,
+    pub instance: String,
 }
 impl Client {
     pub fn open(
@@ -65,19 +73,55 @@ impl Client {
         restore: bool,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Arc<Self>> {
+        Self::open_with(
+            path,
+            launch,
+            force_new,
+            if restore {
+                Reconnect::All
+            } else {
+                Reconnect::Fresh
+            },
+            true,
+            wake,
+        )
+    }
+    pub fn open_with(
+        path: &Path,
+        launch: Launch,
+        force_new: bool,
+        reconnect: Reconnect,
+        create_if_empty: bool,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Arc<Self>> {
         let mut connection = Connection::connect_or_start(path)?;
         let mut state = State::default();
         let Reply::List(infos) = connection.call(Request::List)? else {
             bail!("Invalid session list reply");
         };
-        for info in infos.into_iter().filter(|_| restore) {
-            let Reply::Snapshot(snapshot) = connection.call(Request::Attach(info.id))? else {
-                bail!("Invalid attach reply");
-            };
-            state.views.insert(info.id);
-            state.snapshot(*snapshot);
+        let selected: Vec<u64> = infos
+            .iter()
+            .filter(|info| match &reconnect {
+                Reconnect::All => true,
+                Reconnect::Detached => !info.attached,
+                Reconnect::Saved(sessions) => sessions
+                    .iter()
+                    .any(|saved| saved.matches(&connection.instance, &[info.id])),
+                Reconnect::Fresh => false,
+            })
+            .map(|info| info.id)
+            .collect();
+        for id in selected {
+            match connection.call(Request::Attach(id)) {
+                Ok(Reply::Snapshot(snapshot)) => {
+                    state.views.insert(id);
+                    state.snapshot(*snapshot);
+                }
+                Ok(_) => state.error = Some("Invalid attach reply".into()),
+                Err(error) => state.error = Some(format!("Restore session: {error:#}")),
+            }
         }
-        if state.views.is_empty() || force_new {
+        if state.views.is_empty() && create_if_empty || force_new {
             let request = if connection.profiles {
                 Ok(Request::CreateProfile(Box::new(launch.clone())))
             } else if launch.legacy_compatible() {
@@ -97,6 +141,7 @@ impl Client {
             }
         }
         let profiles = connection.profiles;
+        let instance = connection.instance.clone();
         state.visible = state.views.iter().copied().collect();
         let state = Arc::new(Mutex::new(state));
         let queued = Arc::new(AtomicUsize::new(0));
@@ -106,6 +151,7 @@ impl Client {
             state: state.clone(),
             queued: queued.clone(),
             profiles,
+            instance,
         });
         thread::Builder::new().name("opterm-service-client".into()).spawn(move || {
             let mut last_list = Instant::now();
