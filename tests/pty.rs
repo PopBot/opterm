@@ -92,11 +92,17 @@ fn clicks_edit_real_readline_input_and_leave_prompt_output_and_stale_views_alone
     wait_for(&session, |s| s.cursor == Some((row, col - 3)));
     session.write(b"X\x1b[F\r").unwrap();
     wait_for(&session, |s| s.text().contains("COMBINING:aXe\u{301}bc"));
+    wait_for(&session, |s| s.cursor.is_some_and(|(_, c)| c == 6));
     session.resize(32, 4, 8.0, 17.0).unwrap();
     session
-        .write(b"printf '\\033[2J\\033[H\\n\\n\\n'\r")
+        .write(b"printf '\\033[2J\\033[HWRAPREADY\\n\\n\\n'\r")
         .unwrap();
-    wait_for(&session, |s| s.cursor == Some((3, 6)));
+    // Resize can leave the previous prompt at the same cursor coordinates.
+    // Wait for the clear command and its fresh Readline prompt, rather than
+    // sending wrapped input while that foreground command is still running.
+    wait_for(&session, |s| {
+        s.cursor == Some((3, 6)) && s.text().starts_with("WRAPREADY")
+    });
     let prefix = "printf 'WRAPPED:%s\\n' ";
     let value = "abcdef0123456789012345678901234567890123456789";
     session

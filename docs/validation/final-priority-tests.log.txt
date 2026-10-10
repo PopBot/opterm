@@ -1,0 +1,209 @@
+    Blocking waiting for file lock on build directory
+   Compiling opterm v0.1.0 (/home/jarod/Dev/extdev/projects/opterm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.11s
+     Running unittests src/lib.rs (target/debug/deps/opterm-bf687f2ca5f92e74)
+
+running 56 tests
+test accessibility::tests::rows_preserve_soft_wraps_and_bound_untrusted_sparse_cells ... ok
+test agents::tests::foreground_ancestry_excludes_background_agents_and_other_sessions ... ok
+test copy_mode::tests::word_motion_shift_selection_and_copy_do_not_mutate_source ... ok
+test copy_mode::tests::snapshot_is_frozen_bounded_and_plain_enter_copies_current_line ... ok
+test copy_mode::tests::wide_and_combining_glyphs_are_selected_as_complete_cells ... ok
+test copy_mode::tests::soft_wrapping_joins_but_hard_line_breaks_are_preserved ... ok
+test history::tests::finished_streams_cannot_be_resumed ... ok
+test agents::tests::executable_and_script_matching_does_not_read_prompts ... ok
+test layout::tests::closing_nested_panes_collapses_only_their_branch ... ok
+test accessibility::tests::native_tree_has_terminal_text_unicode_caret_and_selected_range ... ok
+test layout::tests::docking_a_split_tab_preserves_sessions_and_can_collapse_again ... ok
+test links::tests::local_paths_need_safe_cwd_and_file_uris_are_decoded ... ok
+test accessibility::tests::output_updates_keep_stable_ids_and_never_steal_find_focus ... ok
+test links::tests::wide_character_second_column_maps_to_same_url ... ok
+test readability::tests::defaults_preserve_theme_colors_and_settings_are_bounded ... ok
+test history::tests::slow_disk_cannot_block_recording_and_reports_dropped_bytes ... ok
+test layout::tests::keyboard_resize_changes_nearest_matching_divider ... ok
+test readability::tests::contrast_improves_on_light_dark_and_midtones_without_changing_good_colors ... ok
+test links::tests::explicit_osc8_metadata_overrides_label_and_rejects_unsafe_scheme ... ok
+test links::tests::only_soft_wraps_join_and_hover_on_either_row_matches ... ok
+test links::tests::punctuation_is_trimmed_but_balanced_url_parentheses_remain ... ok
+test accessibility::tests::output_bursts_are_coalesced_and_announcements_are_not_per_cell ... ok
+test selection::tests::block_drag_keeps_column_boundaries_and_direction ... ok
+test search::tests::regex_hard_newline_edges_map_only_to_overlapping_glyphs ... ok
+test search::tests::soft_wrapping_and_hard_newlines_remain_distinct ... ok
+test search::tests::budgets_invalid_patterns_and_zero_width_matches_are_bounded ... ok
+test selection::tests::line_selection_includes_soft_wrapped_line_without_inserted_newline ... ok
+test selection::tests::semantic_selection_preserves_wide_and_combining_characters ... ok
+test selection::tests::gestures_and_mouse_override_are_explicit ... ok
+test links::tests::unsafe_targets_and_unbounded_lines_are_rejected ... ok
+test settings::tests::readability_defaults_migrate_and_invalid_values_are_rejected ... ok
+test search::tests::literal_regex_and_explicit_case_work_with_unicode ... ok
+test history::tests::fragmented_output_uses_byte_capacity_instead_of_message_slots ... ok
+test shell_integration::tests::explicit_boundaries_copy_rendered_output_without_prompt_or_command ... ok
+test shell_integration::tests::destructive_partial_scroll_keeps_tracking_the_actual_kernel_region ... ok
+test shell_integration::tests::no_markers_and_malformed_markers_have_explicit_fallback ... ok
+test shell_integration::tests::wrapped_unicode_output_and_new_command_boundaries_are_exact ... ok
+test shortcuts::tests::duplicate_aliases_require_explicit_unbind_and_reassignment ... ok
+test shell_integration::tests::synchronized_markers_never_copy_output_from_an_earlier_cursor ... ok
+test shortcuts::tests::defaults_preserve_interrupt_and_distinguish_navigation_from_resize ... ok
+test shortcuts::tests::new_shortcuts_migrate_without_overwriting_custom_or_disabled_bindings ... ok
+test shell_integration::tests::cwd_metadata_requires_local_host_absolute_existing_directory ... ok
+test shell_integration::tests::observed_ansi_preserves_kernel_grid_modes_and_cursor ... ok
+test shell_integration::tests::bounded_markers_and_scrollback_trim_never_copy_unrelated_content ... ok
+test shell_integration::tests::wrapped_input_and_tab_scroll_preserve_output_boundaries ... ok
+test shortcuts::tests::p1_defaults_migrate_without_conflicts_or_overwriting_user_bindings ... ok
+test transfers::tests::timeout_preserves_source_and_rejects_late_ack ... ok
+test settings::tests::private_recovery_permissions ... ok
+test settings::tests::backup_prepare_failure_does_not_change_active_file ... ok
+test settings::tests::invalid_edits_and_drafts_never_overwrite_recovery ... ok
+test settings::tests::failed_save_preserves_previous_backup_and_draft ... ok
+test settings::tests::roundtrip_and_corrupt_startup_recovery_leave_file_untouched ... ok
+test settings::tests::failed_atomic_replacement_retains_previous_valid_copy ... ok
+test settings::tests::shortcut_migration_reassignment_and_backup_are_validated ... ok
+test settings::tests::corrupt_backup_falls_back_and_atomic_replacement_failure_keeps_good_copy ... ok
+test settings::tests::conflict_requires_explicit_replace_and_external_edits_apply ... ok
+
+test result: ok. 56 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running unittests src/main.rs (target/debug/deps/opterm-b61a09d7dafe0db9)
+
+running 16 tests
+test input::tests::clipboard_keeps_modifiers_when_keys_are_batched ... ok
+test ime::tests::global_cancel_and_wrong_session_commit_never_forward_preedit ... ok
+test ime::tests::preedit_is_preview_only_and_commit_is_one_exact_utf8_packet ... ok
+test ime::tests::same_focus_is_retained_and_empty_preedit_can_be_cancelled ... ok
+test font_tests::terminal_has_modern_outline_emoji_without_system_fonts ... ok
+test input::tests::function_keys_control_punctuation_and_alt_sequences ... ok
+test input::tests::mouse_protocols_distinguish_release_drag_and_hover ... ok
+test input::tests::shell_interrupt_and_cursor_modes ... ok
+test input::tests::legacy_mouse_coordinates_are_bounded_and_utf8_mode_is_honored ... ok
+test session_controls::tests::restored_branch_omits_sessions_reopened_elsewhere ... ok
+test ime::tests::preview_limit_never_splits_utf8_and_does_not_truncate_commit ... ok
+test ime::tests::focus_change_discards_delayed_commit_until_fresh_composition ... ok
+test session_controls::tests::pane_undo_rejoins_unchanged_survivors_without_duplicates ... ok
+test session_controls::tests::mru_is_bounded_and_service_identity_does_not_collide ... ok
+test session_controls::tests::whole_tab_retains_focus_name_and_split_geometry ... ok
+test font_tests::installed_cjk_fallback_supplies_terminal_glyphs ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+     Running tests/fonts.rs (target/debug/deps/fonts-c3a5cd5e089d88ad)
+
+running 1 test
+test bundled_emoji_outline_is_supported_and_rasterizes_modern_glyphs ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/history.rs (target/debug/deps/history-766435f220254553)
+
+running 5 tests
+test retention_removes_expired_then_oldest_output_and_preserves_other_files ... ok
+test startup_opt_out_and_failed_disk_write_leave_live_work_usable ... ok
+test pause_resume_keeps_shell_alive_and_preserves_raw_output_privately ... ok
+test client_applies_global_opt_out_before_creating_a_shell ... ok
+test stream_limit_reports_gap_and_live_scrollback_has_a_cell_budget ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests/layouts.rs (target/debug/deps/layouts-5932e091a20c50c4)
+
+running 4 tests
+test references_require_the_same_service_instance_and_validation_is_bounded ... ok
+test files_are_private_and_write_failures_leave_the_previous_layout ... ok
+test corrupt_and_invalid_layouts_preserve_the_saved_file ... ok
+test layouts_round_trip_and_claim_each_window_without_overwriting_others ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/native_platform.rs (target/debug/deps/native_platform-eec8e6219ef7f0a6)
+
+running 3 tests
+test native_ctrl_c_interrupts_a_foreground_command ... ok
+test native_pty_colors_unicode_and_resize ... ok
+test native_local_service_reattaches_same_process_and_state_without_recording ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
+     Running tests/pty.rs (target/debug/deps/pty-a1b5b94929c0488f)
+
+running 7 tests
+test existing_agent_clis_start_in_native_pty ... ignored, requires locally installed Codex and Claude CLIs; performs only help launches
+test profile_theme_queries_match_theme_and_program_overrides ... ok
+test terminal_status_queries_receive_replies ... ok
+test paste_preserves_exact_bytes_with_and_without_bracketed_framing ... ok
+test native_shell_title_color_and_resize ... ok
+test alternate_screen_restores_main_screen ... ok
+test clicks_edit_real_readline_input_and_leave_prompt_output_and_stale_views_alone ... ok
+
+test result: ok. 6 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.43s
+
+     Running tests/search.rs (target/debug/deps/search-27b4ad8bcd0dbfe2)
+
+running 8 tests
+test older_hello_deserializes_without_search_capability ... ok
+test regex_navigation_distinguishes_combining_char_matches_in_the_same_cell ... ok
+test ipc_snapshot_preserves_search_and_osc8_spaces_and_wrapped_gaps ... ok
+test enhanced_search_counts_navigates_and_preserves_manual_selection ... ok
+test literal_search_visits_offscreen_matches_in_both_directions_and_wraps ... ok
+test service_search_reports_no_match_and_control_errors_without_global_errors ... ok
+test enhanced_ipc_errors_are_local_and_all_session_scan_does_not_take_control ... ok
+test literal_search_crosses_soft_wrapping_and_missing_query_preserves_process ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running tests/service.rs (target/debug/deps/service-3a91be52a2e4dc8f)
+
+running 9 tests
+test older_service_keeps_existing_work_when_profiles_are_rejected ... ignored, requires a preserved pre-profile Opterm binary in OPTERM_TEST_OLD_BINARY
+test interactive_sessions_enable_color_and_keep_palette_and_truecolor ... ok
+test one_controller_and_duplicate_service_preserve_existing_work ... ok
+test configured_profiles_capture_launch_and_live_themes_preserve_program_colors ... ok
+test foreground_agent_fixture_keeps_alternate_screen_and_process_state ... ok
+test service_failure_never_replays_old_work ... ok
+test saved_references_reattach_only_selected_work_and_never_reuse_ids_after_restart ... ok
+test shell_and_scrollback_survive_view_disconnect_and_detach ... ok
+test provider_recognition_restores_shell_title_and_preserves_manual_names_on_reattach ... ok
+
+test result: ok. 8 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 6.58s
+
+     Running tests/settings_profiles.rs (target/debug/deps/settings_profiles-2bf6959031676ac9)
+
+running 6 tests
+test appearance_only_v1_migrates_and_deleted_references_have_safe_fallbacks ... ok
+test provider_presets_migrate_once_and_preserve_user_settings ... ok
+test theme_import_export_validates_colors_and_preserves_existing_files ... ok
+test profiles_themes_and_recovery_omit_only_marked_secret_values ... ok
+test invalid_env_arguments_and_oversized_files_cannot_replace_recovery ... ok
+test profile_carets_round_trip_and_keep_old_settings_compatible ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/shell_integration.rs (target/debug/deps/shell_integration-9b40058b0f7491bd)
+
+running 3 tests
+test legacy_service_has_no_shell_integration_capability ... ok
+test observed_output_copy_is_readonly_and_errors_are_query_specific ... ok
+test bash_and_zsh_sourceable_hooks_track_output_cwd_and_wrapped_commands ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+     Running tests/storage.rs (target/debug/deps/storage-7009d919c3eace06)
+
+running 6 tests
+test cache_overlap_with_actual_service_state_or_recovery_is_rejected_before_changes ... ok
+test clear_cache_rejects_symlinks_without_following_them ... ok
+test clear_cache_preserves_unrelated_files_settings_state_and_backup ... ok
+test existing_destination_and_failed_locator_write_preserve_active_location ... ok
+test relocation_is_next_launch_only_and_preserves_original_and_backup ... ok
+test unavailable_or_corrupt_location_uses_explicit_recovery_and_blocks_fallback_saves ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/transfers.rs (target/debug/deps/transfers-29a3799c4918da06)
+
+running 4 tests
+test malformed_transfer_and_expired_offer_cannot_be_accepted ... ok
+test new_window_offer_is_explicit_and_cancellation_rejects_late_acceptance ... ok
+test existing_window_transfer_preserves_tree_and_requires_one_acknowledgment ... ok
+test only_one_new_window_can_accept_an_offer_and_files_are_private ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+

@@ -101,6 +101,13 @@ pub enum Request {
         col: usize,
         start: bool,
     },
+    SelectMode {
+        id: u64,
+        row: usize,
+        col: usize,
+        start: bool,
+        mode: crate::selection::SelectionMode,
+    },
     ClickEdit {
         id: u64,
         row: usize,
@@ -112,6 +119,27 @@ pub enum Request {
         query: String,
         backwards: bool,
         reset: bool,
+        token: u64,
+    },
+    SearchAdvanced {
+        id: u64,
+        query: String,
+        options: crate::search::Options,
+        backwards: bool,
+        reset: bool,
+        token: u64,
+    },
+    SearchAll {
+        query: String,
+        options: crate::search::Options,
+        token: u64,
+    },
+    Prompt {
+        id: u64,
+        backwards: bool,
+    },
+    LastCommandOutput {
+        id: u64,
         token: u64,
     },
     Shutdown,
@@ -126,9 +154,15 @@ pub enum Reply {
         #[serde(default)]
         search: bool,
         #[serde(default)]
+        advanced_search: bool,
+        #[serde(default)]
         history: bool,
         #[serde(default)]
         click_edit: bool,
+        #[serde(default)]
+        smart_selection: bool,
+        #[serde(default)]
+        shell_integration: bool,
         #[serde(default)]
         instance: String,
     },
@@ -141,6 +175,20 @@ pub enum Reply {
         id: u64,
         token: u64,
         found: bool,
+    },
+    SearchAdvanced {
+        id: u64,
+        token: u64,
+        summary: crate::search::Summary,
+    },
+    SearchAll {
+        token: u64,
+        summary: crate::search::AllSummary,
+    },
+    LastCommandOutput {
+        id: u64,
+        token: u64,
+        text: String,
     },
 }
 
@@ -221,8 +269,11 @@ pub struct Connection {
     stream: LocalSocketStream,
     pub profiles: bool,
     pub search_supported: bool,
+    pub advanced_search_supported: bool,
     pub history_supported: bool,
     pub click_edit_supported: bool,
+    pub smart_selection_supported: bool,
+    pub shell_integration_supported: bool,
     pub instance: String,
 }
 impl Connection {
@@ -232,8 +283,11 @@ impl Connection {
             stream: LocalSocketStream::connect(endpoint(&path)?)?,
             profiles: false,
             search_supported: false,
+            advanced_search_supported: false,
             history_supported: false,
             click_edit_supported: false,
+            smart_selection_supported: false,
+            shell_integration_supported: false,
             instance: String::new(),
         };
         match connection.call(Request::Hello(VERSION))? {
@@ -241,15 +295,21 @@ impl Connection {
                 version: VERSION,
                 profiles,
                 search,
+                advanced_search,
                 history,
                 click_edit,
+                smart_selection,
+                shell_integration,
                 instance,
                 ..
             } => {
                 connection.profiles = profiles;
                 connection.search_supported = search;
+                connection.advanced_search_supported = advanced_search;
                 connection.history_supported = history;
                 connection.click_edit_supported = click_edit;
+                connection.smart_selection_supported = smart_selection;
+                connection.shell_integration_supported = shell_integration;
                 connection.instance = instance;
                 Ok(connection)
             }
@@ -360,8 +420,16 @@ impl Managed {
         let revision = self.revision();
         let mut screen = self.session.screen();
         let background = screen.background;
+        let wrapped_rows = &screen.wrapped_rows;
         screen.cells.retain(|cell| {
-            cell.text != " " || cell.bg != background || cell.selected || cell.underline
+            cell.text != " "
+                || cell.bg != background
+                || cell.selected
+                || cell.underline
+                || cell.search_match
+                || cell.search_current
+                || cell.hyperlink.is_some()
+                || wrapped_rows.contains(&cell.row)
         });
         Reply::Snapshot(Box::new(Snapshot {
             info: self.info(id, client),
@@ -423,10 +491,42 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
                 pid: std::process::id(),
                 profiles: true,
                 click_edit: true,
+                smart_selection: true,
+                shell_integration: true,
                 search: true,
+                advanced_search: true,
                 history: true,
                 instance: hub.instance.clone(),
             });
+        }
+        Request::SearchAll {
+            query,
+            options,
+            token,
+        } => {
+            let mut summary = crate::search::AllSummary::default();
+            if let Some(regex) = crate::search::compile(&query, options)? {
+                let session_count = hub.sessions.len().min(crate::search::MAX_ALL_SESSIONS);
+                let budget = crate::search::MAX_ALL_CELLS / session_count.max(1);
+                summary.truncated = hub.sessions.len() > session_count;
+                let started = std::time::Instant::now();
+                for (&id, managed) in hub.sessions.iter().take(session_count) {
+                    if started.elapsed() > std::time::Duration::from_millis(500) {
+                        summary.truncated = true;
+                        break;
+                    }
+                    let (result, preview) = managed.session.search_read_only(&regex, budget);
+                    summary.truncated |= result.truncated;
+                    if result.count > 0 || result.truncated {
+                        summary.sessions.push(crate::search::SessionResult {
+                            id,
+                            summary: result,
+                            preview,
+                        });
+                    }
+                }
+            }
+            return Ok(Reply::SearchAll { token, summary });
         }
         Request::List => {
             return Ok(Reply::List(
@@ -488,8 +588,12 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
         | Request::Resize { id, .. }
         | Request::Scroll { id, .. }
         | Request::Select { id, .. }
+        | Request::SelectMode { id, .. }
         | Request::ClickEdit { id, .. }
         | Request::Search { id, .. }
+        | Request::Prompt { id, .. }
+        | Request::LastCommandOutput { id, .. }
+        | Request::SearchAdvanced { id, .. }
         | Request::Recording { id, .. } => *id,
         _ => unreachable!(),
     };
@@ -568,6 +672,32 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
             managed.require_control(client)?;
             managed.session.set_recording(enabled);
         }
+        Request::Prompt { backwards, .. } => {
+            managed.require_control(client)?;
+            managed.session.navigate_prompt(backwards)?;
+        }
+        Request::LastCommandOutput { id, token } => {
+            ensure!(
+                managed.viewers.contains(&client),
+                "Attach before copying command output"
+            );
+            let text = managed.session.last_command_output()?;
+            return Ok(Reply::LastCommandOutput { id, token, text });
+        }
+        Request::SearchAdvanced {
+            id,
+            query,
+            options,
+            backwards,
+            reset,
+            token,
+        } => {
+            managed.require_control(client)?;
+            let summary = managed
+                .session
+                .search_advanced(&query, options, backwards, reset)?;
+            return Ok(Reply::SearchAdvanced { id, token, summary });
+        }
         Request::Search {
             id,
             query,
@@ -578,6 +708,16 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
             managed.require_control(client)?;
             let found = managed.session.search(&query, backwards, reset)?;
             return Ok(Reply::Search { id, token, found });
+        }
+        Request::SelectMode {
+            row,
+            col,
+            start,
+            mode,
+            ..
+        } => {
+            managed.require_control(client)?;
+            managed.session.select_mode(row, col, start, mode);
         }
         Request::Select {
             row, col, start, ..
@@ -712,7 +852,10 @@ pub fn serve(path: &Path) -> Result<()> {
                     pid: std::process::id(),
                     profiles: true,
                     click_edit: true,
+                    smart_selection: true,
+                    shell_integration: true,
                     search: true,
+                    advanced_search: true,
                     history: true,
                     instance,
                 },

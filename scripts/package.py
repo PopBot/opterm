@@ -163,6 +163,7 @@ def main():
                 else:
                     guide = guide.replace(f']({reference})', f'](https://github.com/PopBot/opterm/blob/{commit}/docs/{reference})')
         (resources / 'USER-GUIDE.md').write_text(guide, encoding='utf-8')
+        shutil.copytree(ROOT / 'scripts/shell-integration', resources / 'shell-integration')
         shutil.copyfile(ROOT / 'docs/distribution.md', resources / 'DISTRIBUTION.md')
         shutil.copyfile(ROOT / 'assets/fonts/NotoEmoji-OFL.txt', resources / 'NotoEmoji-OFL.txt')
         shutil.copyfile(ROOT / 'docs/fonts.md', resources / 'FONTS.md')

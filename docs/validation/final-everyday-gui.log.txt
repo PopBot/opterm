@@ -1,0 +1,17 @@
+Native double-click word, triple-click logical line, and Alt block drag selection: passed
+Enhanced find screenshot: /home/jarod/Dev/extdev/projects/opterm/target/everyday-find-linux.png
+Invalid regex screenshot: /home/jarod/Dev/extdev/projects/opterm/target/everyday-find-error-linux.png
+Native Smart/case-sensitive/regex find, match counts, highlights, Enter navigation, invalid regex and Escape: passed
+Session picker screenshot: /home/jarod/Dev/extdev/projects/opterm/target/everyday-picker-linux.png
+Quick switcher filter, ArrowDown/Enter selection, Escape cancellation and no query leakage into shell: passed
+Split navigation screenshot: /home/jarod/Dev/extdev/projects/opterm/target/everyday-split-linux.png
+Rapid Close/Undo restores split geometry, focus and four original shell PIDs: passed
+Failure screenshot: /home/jarod/Dev/extdev/projects/opterm/target/gui-failure.png
+Traceback (most recent call last):
+  File "/home/jarod/Dev/extdev/projects/opterm/scripts/smoke_gui.py", line 1481, in <module>
+    main()
+  File "/home/jarod/Dev/extdev/projects/opterm/scripts/smoke_gui.py", line 531, in main
+    wait_until(lambda: len(document()['tabs']) == 3 and document()['tabs'][1] == whole_tab_before)
+  File "/home/jarod/Dev/extdev/projects/opterm/scripts/smoke_gui.py", line 69, in wait_until
+    raise RuntimeError('GUI check timed out')
+RuntimeError: GUI check timed out

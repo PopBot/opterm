@@ -78,6 +78,7 @@ impl Default for Appearance {
 pub struct Settings {
     pub version: u32,
     pub appearance: Appearance,
+    pub readability: crate::readability::Readability,
     pub shell_caret: Caret,
     pub default_profile: String,
     pub workspace_directory: String,
@@ -93,6 +94,7 @@ impl Default for Settings {
         Self {
             version: 3,
             appearance: Appearance::default(),
+            readability: crate::readability::Readability::default(),
             shell_caret: Caret::default(),
             default_profile: SHELL.into(),
             workspace_directory: String::new(),
@@ -120,6 +122,7 @@ impl Settings {
         );
         self.shortcuts.validate()?;
         self.history.validate()?;
+        self.readability.validate()?;
         let a = &self.appearance;
         ensure!(
             !a.font_family.trim().is_empty()
@@ -852,5 +855,26 @@ mod tests {
                 & 0o777,
             0o700
         );
+    }
+    #[test]
+    fn readability_defaults_migrate_and_invalid_values_are_rejected() {
+        let legacy = Settings::parse(b"version = 3\n").unwrap();
+        assert_eq!(
+            legacy.readability,
+            crate::readability::Readability::default()
+        );
+        let mut settings = legacy;
+        settings.readability.minimum_contrast = 4.5;
+        settings.readability.automatic_cursor_contrast = true;
+        settings.readability.cursor_line_guide = true;
+        settings.readability.inactive_pane_dim = 0.3;
+        let encoded = toml::to_string(&settings).unwrap();
+        let roundtrip = Settings::parse(encoded.as_bytes()).unwrap();
+        assert_eq!(roundtrip.readability, settings.readability);
+        settings.readability.inactive_pane_dim = f32::NAN;
+        assert!(settings.validate().is_err());
+        settings.readability.inactive_pane_dim = 0.0;
+        settings.readability.minimum_contrast = 0.9;
+        assert!(settings.validate().is_err());
     }
 }

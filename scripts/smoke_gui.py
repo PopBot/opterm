@@ -108,12 +108,14 @@ def main():
     tabs_only = '--tabs-only' in sys.argv
     tabs_before = '--tabs-before' in sys.argv
     caret_only = '--caret-only' in sys.argv
-    arguments = [arg for arg in sys.argv[1:] if arg not in ('--controls-only', '--providers-only', '--caret-only', '--tabs-only', '--tabs-before')]
+    everyday_only = '--everyday-only' in sys.argv
+    priorities_only = '--priorities-only' in sys.argv
+    arguments = [arg for arg in sys.argv[1:] if arg not in ('--controls-only', '--providers-only', '--caret-only', '--tabs-only', '--tabs-before', '--everyday-only', '--priorities-only')]
     binary = Path(arguments[0]).resolve() if arguments else TARGET / 'debug/opterm'
     try:
         display = ':' + server.stdout.readline().decode().strip()
         env = {**os.environ, 'DISPLAY': display, 'LIBGL_ALWAYS_SOFTWARE': '1', 'WINIT_UNIX_BACKEND': 'x11', 'OPTERM_STATE_DIR': state.name + '/runtime', 'OPTERM_CONFIG_DIR': state.name + '/settings', 'OPTERM_RECOVERY_DIR': state.name + '/recovery'}
-        if providers_only:
+        if providers_only or everyday_only:
             env['SHELL'] = '/bin/sh'  # Avoid personal prompt hooks overwriting fixture titles.
         program = ['/bin/sh']
         if caret_only or tabs_only or tabs_before:
@@ -124,6 +126,13 @@ def main():
             config.chmod(0o600)
             program = ['/bin/bash', '--noprofile', '--norc', '-i']
             if tabs_only or tabs_before: env['SHELL'] = '/bin/sh'
+        if priorities_only:
+            env.update(SHELL='/bin/bash', PS1='priority> ')
+            config = Path(env['OPTERM_CONFIG_DIR']) / 'settings.toml'
+            config.parent.mkdir(parents=True, mode=0o700)
+            config.write_text('version = 3\n[shell_caret]\nshape = "block"\nblink = false\n[readability]\nminimum_contrast = 4.5\nautomatic_cursor_contrast = true\ncursor_line_guide = true\ninactive_pane_dim = 0.3\n')
+            config.chmod(0o600)
+            program = ['/bin/bash', '--noprofile', '--norc', '-i']
         app = subprocess.Popen([str(binary), '--', *program], cwd=ROOT, env=env)
         dpy = wait_until(lambda: X.XOpenDisplay(display.encode()))
         root = X.XDefaultRootWindow(dpy)
@@ -219,6 +228,343 @@ def main():
             type_text(command + " > '" + str(path) + "'\n")
             wait_until(lambda: path.exists() and path.stat().st_size > 0)
             return path.read_text().strip()
+
+        if priorities_only:
+            X.XMoveWindow(dpy, window, 0, 0); X.XResizeWindow(dpy, window, 1000, 680)
+            X.XFlush(dpy); time.sleep(0.4)
+            layouts = Path(env['OPTERM_STATE_DIR']) / 'layouts'
+            layout_path = wait_until(lambda: next(iter(layouts.glob('*.json')), None))
+            def document(): return json.loads(layout_path.read_text())
+            def members(node):
+                if 'Pane' in node: return [node['Pane']['session']['id']]
+                split = node['Split']
+                return members(split['first']) + members(split['second'])
+            def active_id():
+                doc = document(); tab = doc['tabs'][doc['active']]
+                return members(tab['layout'])[tab['focused']]
+            def press(symbol, shift=False, ctrl=False, alt=False):
+                for enabled, modifier in ((ctrl, 0xffe3), (shift, 0xffe1), (alt, 0xffe9)):
+                    if enabled: key(modifier, 1)
+                key(symbol, 1); key(symbol, 0)
+                for enabled, modifier in ((alt, 0xffe9), (shift, 0xffe1), (ctrl, 0xffe3)):
+                    if enabled: key(modifier, 0)
+                X.XFlush(dpy)
+            def clipboard():
+                return subprocess.check_output(['xclip', '-selection', 'clipboard', '-o'], env=env, timeout=5)
+            def pixels(path):
+                png = path.read_bytes(); width, height = struct.unpack('>II', png[16:24]); offset = 8; compressed = b''
+                while offset < len(png):
+                    length = struct.unpack('>I', png[offset:offset+4])[0]; kind = png[offset+4:offset+8]
+                    if kind == b'IDAT': compressed += png[offset+8:offset+8+length]
+                    offset += length + 12
+                raw = zlib.decompress(compressed); stride = width * 3 + 1
+                assert all(raw[row * stride] == 0 for row in range(height))
+                return width, height, lambda x, y: tuple(raw[y * stride + 1 + x * 3:y * stride + 4 + x * 3])
+            with socket.socket(socket.AF_UNIX) as observer:
+                observer.settimeout(5); observer.connect(str(Path(env['OPTERM_STATE_DIR']) / 'service.sock'))
+                def call(request):
+                    body = json.dumps(request).encode(); observer.sendall(struct.pack('<I', len(body)) + body)
+                    def receive(count):
+                        data = b''
+                        while len(data) < count:
+                            chunk = observer.recv(count - len(data)); assert chunk; data += chunk
+                        return data
+                    return json.loads(receive(struct.unpack('<I', receive(4))[0]))
+                capabilities = call({'Hello': 1})['Hello']
+                assert capabilities.get('shell_integration'), capabilities
+                def snapshot(session): return call({'View': {'id': session, 'since': None}})['Snapshot']
+                def text(session):
+                    cells = snapshot(session)['screen']['cells']; rows = {}
+                    for cell in cells: rows.setdefault(cell['row'], {})[cell['col']] = cell['text']
+                    return '\n'.join(''.join(cells.get(col, ' ') for col in range(max(cells) + 1)) for _, cells in sorted(rows.items()))
+                first = active_id(); call({'Attach': first})
+                original_pid = command_file("stty -echo; PS1=''; printf '%s' $$", 'priorities-original-pid')
+                live = Path(state.name) / 'background-live'
+                type_text("printf '\\033[2J\\033[Halpha beta\\nsecond line\\n'; (sleep 1.5; printf 'LIVE_REFRESH\\n'; touch '" + str(live) + "') &\n")
+                wait_until(lambda: 'alpha beta' in text(first))
+                shortcut(0x20)  # Ctrl+Shift+Space: freeze visible snapshot.
+                press(0xff50, ctrl=True); time.sleep(0.2)
+                frozen = screenshot(display, 'priorities-copy-frozen-linux.png', window)
+                wait_until(live.exists)
+                wait_until(lambda: 'LIVE_REFRESH' in text(first))
+                still_frozen = screenshot(display, 'priorities-copy-live-output-linux.png', window)
+                assert frozen.read_bytes() == still_frozen.read_bytes(), 'Live PTY output changed the frozen copy viewport'
+                type_text('ignoredword')  # Non-motion text is consumed, never sent to the PTY.
+                press(0xff50, ctrl=True)
+                for _ in range(4): press(0xff53, shift=True)
+                time.sleep(0.3)
+                print('Keyboard copy selection screenshot:', screenshot(display, 'priorities-copy-selection-linux.png', window))
+                press(0xff0d); time.sleep(0.4)
+                import shutil
+                if shutil.which('xclip'):
+                    assert clipboard() == b'alpha', clipboard()
+                    print('Frozen keyboard selection copies exact native clipboard bytes; background service output continues: passed')
+                else: print('Native clipboard readback skipped (xclip absent)')
+                assert command_file("printf '%s' $$", 'priorities-after-copy-pid') == original_pid
+                shortcut(0x20); type_text('ignoredagain'); press(0xff1b); time.sleep(0.25)
+                assert command_file("printf '%s' $$", 'priorities-after-escape-pid') == original_pid
+                print('Copy mode ignored keys/Escape/Enter never leak terminal input and preserve original shell PID: passed')
+
+                # Compare actual native foregrounds in focused/inactive split panes.
+                type_text("printf '\\033[2J\\033[HDIM_REFERENCE\\n'\n")
+                wait_until(lambda: 'DIM_REFERENCE' in text(first))
+                shortcut(ord('e')); wait_until(lambda: active_id() != first)
+                second = active_id(); call({'Attach': second})
+                command_file("stty -echo; PS1=''; printf '%s' $$", 'priorities-second-pid')
+                type_text("printf '\\033[2J\\033[HDIM_REFERENCE\\n'\n")
+                wait_until(lambda: 'DIM_REFERENCE' in text(second))
+                time.sleep(0.3)
+                split_shot = screenshot(display, 'priorities-readability-linux.png', window)
+                width, height, pixel = pixels(split_shot)
+                left_peak = max(pixel(x, y)[0] for x in range(6, 130) for y in range(39, 51))
+                right_peak = max(pixel(x, y)[0] for x in range(width // 2 + 8, width // 2 + 135) for y in range(39, 51))
+                assert right_peak > left_peak + 15, (left_peak, right_peak)
+                assert pixel(width - 40, 58) != pixel(width - 40, 80), 'Cursor line guide not visibly rendered'
+                shortcut(ord('j'))
+                ring = screenshot(display, 'priorities-find-cursor-linux.png', window)
+                w, h, pixel = pixels(ring)
+                assert sum(pixel(x, y) == (80, 180, 255) for y in range(30, min(h, 160)) for x in range(w // 2, min(w, w // 2 + 130))) > 50, 'Find cursor ring missing'
+                print('Native inactive pane dimming, cursor-line guide and Find cursor marker: passed')
+                shortcut(ord(','))
+                settings_window = wait_until(lambda: next(iter(find_windows('Opterm Settings')), None))
+                X.XMoveWindow(dpy, settings_window, 0, 0); X.XRaiseWindow(dpy, settings_window)
+                focus_native_window(settings_window); time.sleep(0.3)
+                print('Readability settings screenshot:', screenshot(display, 'priorities-readability-settings-linux.png', settings_window))
+                close_window(settings_window); time.sleep(0.3); focus_native_window(window)
+
+                # Opt-in script emits real prompt/output and OSC7 cwd metadata.
+                integration = ROOT / 'scripts/shell-integration/opterm.bash'
+                assert integration.exists(), integration
+                type_text("source '" + str(integration) + "'\n")
+                wait_until(lambda: snapshot(second)['screen']['shell_integration'])
+                type_text("cd '" + state.name + "'\n")
+                wait_until(lambda: snapshot(second)['screen']['cwd'] == state.name)
+                type_text("printf 'SHELL_CAPTURE_OK\\n'\n")
+                wait_until(lambda: 'SHELL_CAPTURE_OK' in text(second)); time.sleep(0.3)
+                shortcut(ord('c'), alt=True)
+                if shutil.which('xclip'):
+                    wait_until(lambda: clipboard() == b'SHELL_CAPTURE_OK\n')
+                type_text("for n in {1..80}; do printf 'scroll %s\\n' \"$n\"; done\n")
+                wait_until(lambda: 'scroll 80' in text(second))
+                press(0xff55, ctrl=True, alt=True); time.sleep(0.3)
+                previous = snapshot(second)['screen']
+                assert previous.get('prompt_navigation') is not None, {key: value for key, value in previous.items() if key != 'cells'}
+                print('Prompt navigation screenshot:', screenshot(display, 'priorities-shell-prompts-linux.png', window))
+                press(0xff56, ctrl=True, alt=True); time.sleep(0.3)
+                following = snapshot(second)['screen']
+                assert following.get('prompt_navigation') is not None, {key: value for key, value in following.items() if key != 'cells'}
+                assert command_file("printf '%s' $$", 'priorities-shell-retained-pid') == Path(state.name, 'priorities-second-pid').read_text().strip()
+                print('Opt-in Bash prompt navigation, exact Copy last output and live OSC7 cwd metadata: passed')
+                type_text("touch './cwd-demo.txt'; printf '\\033[2J\\033[H./cwd-demo.txt\\n'\n")
+                wait_until(lambda: './cwd-demo.txt' in text(second))
+                time.sleep(0.2)
+                x, y = width // 2 + 43, 43
+                XT.XTestFakeMotionEvent(dpy, -1, x, y, 0)
+                XT.XTestFakeButtonEvent(dpy, 3, 1, 0); XT.XTestFakeButtonEvent(dpy, 3, 0, 0)
+                X.XFlush(dpy); time.sleep(0.25)
+                print('Live cwd relative link screenshot:', screenshot(display, 'priorities-cwd-link-linux.png', window))
+                click(x + 45, y + 31)
+                if shutil.which('xclip'):
+                    assert Path(clipboard().decode()).resolve() == Path(state.name, 'cwd-demo.txt').resolve(), clipboard()
+                    print('Relative file link uses live OSC7 cwd and copies its resolved local path: passed')
+            return
+
+        if everyday_only:
+            X.XMoveWindow(dpy, window, 0, 0); X.XResizeWindow(dpy, window, 1000, 680)
+            X.XFlush(dpy); time.sleep(0.4)
+            layouts = Path(env['OPTERM_STATE_DIR']) / 'layouts'
+            layout_path = wait_until(lambda: next(iter(layouts.glob('*.json')), None))
+            def document():
+                return json.loads(layout_path.read_text())
+            def members(node):
+                if 'Pane' in node:
+                    return [node['Pane']['session']['id']]
+                split = node['Split']
+                return members(split['first']) + members(split['second'])
+            def active_id():
+                doc = document()
+                tab = doc['tabs'][doc['active']]
+                return members(tab['layout'])[tab['focused']]
+            def press(symbol, shift=False, ctrl=False, alt=False):
+                for enabled, modifier in ((ctrl, 0xffe3), (shift, 0xffe1), (alt, 0xffe9)):
+                    if enabled: key(modifier, 1)
+                key(symbol, 1); key(symbol, 0)
+                for enabled, modifier in ((alt, 0xffe9), (shift, 0xffe1), (ctrl, 0xffe3)):
+                    if enabled: key(modifier, 0)
+                X.XFlush(dpy)
+            def replace_query(query):
+                click(140, 43)
+                press(ord('a'), ctrl=True)
+                type_text(query)
+            def mouse_clicks(x, y, count):
+                XT.XTestFakeMotionEvent(dpy, -1, x, y, 0)
+                for _ in range(count):
+                    XT.XTestFakeButtonEvent(dpy, 1, 1, 0)
+                    XT.XTestFakeButtonEvent(dpy, 1, 0, 0)
+                    X.XFlush(dpy); time.sleep(0.07)
+                time.sleep(0.25)
+            def terminal_point(row, col):
+                # Default native font/padding: 8.43 px columns, 16.8 px rows.
+                return round(6 + (col + 0.4) * 8.43), round(36 + (row + 0.4) * 16.8)
+            with socket.socket(socket.AF_UNIX) as observer:
+                observer.settimeout(5)
+                observer.connect(str(Path(env['OPTERM_STATE_DIR']) / 'service.sock'))
+                def call(request):
+                    body = json.dumps(request).encode()
+                    observer.sendall(struct.pack('<I', len(body)) + body)
+                    def receive(count):
+                        data = b''
+                        while len(data) < count:
+                            chunk = observer.recv(count - len(data))
+                            assert chunk, 'Service closed observer connection'
+                            data += chunk
+                        return data
+                    return json.loads(receive(struct.unpack('<I', receive(4))[0]))
+                capabilities = call({'Hello': 1})['Hello']
+                assert capabilities['smart_selection'] and capabilities['advanced_search'], capabilities
+                def snapshot(session=None):
+                    return call({'View': {'id': session or active_id(), 'since': None}})['Snapshot']
+                first = active_id()
+                call({'Attach': first})  # Observe only; never take control or inject input.
+                first_pid = command_file("stty -echo; printf '%s' $$", 'everyday-alpha-pid')
+                type_text("printf '\\033[2J\\033[Halpha beta gamma\\nfirst line\\nabcdef\\nghijkl\\n'\n")
+                wait_until(lambda: any(cell['row'] == 0 and cell['text'] == 'a' for cell in snapshot()['screen']['cells']))
+                mouse_clicks(*terminal_point(0, 8), 2)
+                wait_until(lambda: snapshot()['selected_text'] == 'beta')
+                mouse_clicks(*terminal_point(1, 5), 3)
+                wait_until(lambda: snapshot()['selected_text'] == 'first line\n')
+                x, y = terminal_point(2, 1); tx, ty = terminal_point(3, 3)
+                key(0xffe9, 1)
+                XT.XTestFakeMotionEvent(dpy, -1, x, y, 0)
+                XT.XTestFakeButtonEvent(dpy, 1, 1, 0); X.XFlush(dpy); time.sleep(0.15)
+                XT.XTestFakeMotionEvent(dpy, -1, tx, ty, 0); X.XFlush(dpy); time.sleep(0.15)
+                XT.XTestFakeButtonEvent(dpy, 1, 0, 0); key(0xffe9, 0); X.XFlush(dpy)
+                wait_until(lambda: snapshot()['selected_text'] == 'bcd\nhij')
+                print('Native double-click word, triple-click logical line, and Alt block drag selection: passed')
+
+                # Search fixtures are actual PTY output; the observer only reads highlights.
+                type_text("printf '\\033[2J\\033[Hneedle NEEDLE needle42\\nnEEdLe nothing needle7\\n'\n")
+                wait_until(lambda: snapshot()['screen']['cursor'][0] == 2)
+                shortcut(ord('f')); click(140, 43); type_text('needle')
+                def highlights(current=False):
+                    field = 'search_current' if current else 'search_match'
+                    cells = [(c['row'], c['col']) for c in snapshot()['screen']['cells'] if c.get(field)]
+                    return cells
+                def match_count():
+                    cells = highlights()
+                    return sum(index == 0 or row != cells[index - 1][0] or col != cells[index - 1][1] + 1
+                               for index, (row, col) in enumerate(cells))
+                wait_until(lambda: match_count() == 5)  # Lowercase query uses Smart case.
+                initial_match = highlights(True)
+                press(0xff0d)
+                wait_until(lambda: highlights(True) and highlights(True) != initial_match)
+                press(0xff0d, shift=True)
+                wait_until(lambda: highlights(True) == initial_match)
+                click(360, 43); click(380, 87)  # Case sensitive.
+                wait_until(lambda: match_count() == 3)
+                click(285, 43)  # Regex.
+                replace_query('needle[0-9]+')
+                wait_until(lambda: match_count() == 2)
+                print('Enhanced find screenshot:', screenshot(display, 'everyday-find-linux.png', window))
+                replace_query('[')
+                wait_until(lambda: not highlights())
+                time.sleep(0.3)
+                print('Invalid regex screenshot:', screenshot(display, 'everyday-find-error-linux.png', window))
+                replace_query('needle[0-9]+')
+                wait_until(lambda: match_count() == 2)
+                press(0xff1b); time.sleep(0.25)
+                wait_until(lambda: not highlights())
+                assert command_file("printf '%s' $$", 'everyday-search-retained-pid') == first_pid
+                print('Native Smart/case-sensitive/regex find, match counts, highlights, Enter navigation, invalid regex and Escape: passed')
+
+                shortcut(ord('t'))
+                beta_left = wait_until(lambda: next((info['id'] for info in call('List')['List'] if info['id'] != first), None))
+                call({'Attach': beta_left})
+                beta_left_pid = command_file("export TAB=beta-left; printf '%s' $$", 'everyday-beta-left-pid')
+                shortcut(ord('e'))
+                beta_right = wait_until(lambda: next((info['id'] for info in call('List')['List'] if info['id'] not in (first, beta_left)), None))
+                call({'Attach': beta_right})
+                beta_right_pid = command_file("export TAB=beta-right; printf '%s' $$", 'everyday-beta-right-pid')
+                shortcut(ord('t'))
+                gamma = wait_until(lambda: next((info['id'] for info in call('List')['List'] if info['id'] not in (first, beta_left, beta_right)), None))
+                call({'Attach': gamma})
+                gamma_pid = command_file("export TAB=gamma; printf '%s' $$", 'everyday-gamma-pid')
+                close_window(window); assert app.wait(timeout=5) == 0
+                doc = document()
+                for tab, name in zip(doc['tabs'], ['Alpha', 'Beta', 'Gamma']): tab['name'] = name
+                doc['size'] = [1000, 680]; doc['position'] = [0, 0]
+                layout_path.write_text(json.dumps(doc))
+                app, window = reopen()
+                X.XMoveWindow(dpy, window, 0, 0); X.XRaiseWindow(dpy, window); X.XFlush(dpy)
+                shortcut(ord('p')); type_text('Beta'); time.sleep(0.25)
+                print('Session picker screenshot:', screenshot(display, 'everyday-picker-linux.png', window))
+                press(0xff54); press(0xff0d)
+                wait_until(lambda: active_id() in (beta_left, beta_right))
+                selected = active_id()
+                expected_pid = beta_left_pid if selected == beta_left else beta_right_pid
+                assert command_file("printf '%s' $$", 'everyday-switched-pid') == expected_pid
+                assert active_id() != gamma
+                shortcut(ord('p')); type_text('does-not-match'); press(0xff1b); time.sleep(0.3)
+                assert command_file("printf '%s' $$", 'everyday-picker-cancel-pid') == expected_pid
+                print('Quick switcher filter, ArrowDown/Enter selection, Escape cancellation and no query leakage into shell: passed')
+                print('Split navigation screenshot:', screenshot(display, 'everyday-split-linux.png', window))
+
+                split_before = document()['tabs'][1]
+                # Back-to-back key events exercise attach/detach races, not just a settled close.
+                press(ord('w'), ctrl=True, shift=True)
+                press(ord('z'), ctrl=True, shift=True)
+                time.sleep(0.4)
+                wait_until(lambda: document()['tabs'][1] == split_before)
+                assert not snapshot(selected)['info']['controlled'], 'Observer stole shell control'
+                assert command_file("printf '%s' $$", 'everyday-undo-split-pid') == expected_pid
+                shortcut(0xff51 if selected == beta_right else 0xff53)
+                other_pid = beta_left_pid if selected == beta_right else beta_right_pid
+                assert command_file("printf '%s' $$", 'everyday-undo-other-pid') == other_pid
+                assert len(call('List')['List']) == 4, 'Undo close created replacement shells'
+                assert len({first_pid, beta_left_pid, beta_right_pid, gamma_pid}) == 4
+                print('Rapid Close/Undo restores split geometry, focus and four original shell PIDs: passed')
+                whole_tab_before = document()['tabs'][1]
+                click(101, 15)  # Beta's native × button after Alpha.
+                wait_until(lambda: [tab['name'] for tab in document()['tabs']] == ['Alpha', 'Gamma'])
+                assert not snapshot(beta_left)['info']['exited'] and not snapshot(beta_right)['info']['exited']
+                shortcut(ord('z'))
+                wait_until(lambda: len(document()['tabs']) == 3 and document()['tabs'][1] == whole_tab_before)
+                assert command_file("printf '%s' $$", 'everyday-undo-whole-tab-pid') == other_pid
+                assert {info['id'] for info in call('List')['List']} == {first, beta_left, beta_right, gamma}
+                print('Tab × followed by Undo restores original named split tab and live session identities: passed')
+
+                shortcut(ord('f')); click(140, 43); type_text('needle')
+                click(500, 43); click(500, 87)  # All sessions scope.
+                replace_query('needle')
+                time.sleep(0.6)
+                print('All sessions find screenshot:', screenshot(display, 'everyday-find-all-linux.png', window))
+                click(240, 65)  # The Alpha result, without starting another shell.
+                wait_until(lambda: active_id() == first)
+                wait_until(lambda: match_count() == 5)
+                press(0xff1b); time.sleep(0.25)
+                assert command_file("printf '%s' $$", 'everyday-find-all-pid') == first_pid
+                assert len(call('List')['List']) == 4
+                print('Native All sessions find result activates the existing matching pane and original shell PID: passed')
+
+                type_text("printf '\\033[2J\\033[H\\033]8;;https://example.com/docs\\033\\\\docs\\033]8;;\\033\\\\\\n'\n")
+                wait_until(lambda: any(cell.get('hyperlink') == 'https://example.com/docs' for cell in snapshot()['screen']['cells']))
+                x, y = terminal_point(0, 1)
+                XT.XTestFakeMotionEvent(dpy, -1, x, y, 0)
+                XT.XTestFakeButtonEvent(dpy, 3, 1, 0); XT.XTestFakeButtonEvent(dpy, 3, 0, 0)
+                X.XFlush(dpy); time.sleep(0.25)
+                # Move into the menu: its stored target must survive leaving the link.
+                XT.XTestFakeMotionEvent(dpy, -1, x + 45, y + 31, 0)
+                X.XFlush(dpy); time.sleep(0.15)
+                print('Link context menu screenshot:', screenshot(display, 'everyday-link-menu-linux.png', window))
+                click(x + 45, y + 31)  # Copy link; never open an external browser.
+                import shutil
+                if shutil.which('xclip'):
+                    copied = subprocess.check_output(['xclip', '-selection', 'clipboard', '-o'], env=env, timeout=5)
+                    assert copied == b'https://example.com/docs', copied
+                    print('OSC 8 context menu target remains stable and Copy link puts exact safe URI on native clipboard: passed')
+                else:
+                    print('OSC 8 Open/Copy context menu inspected; clipboard readback skipped (xclip absent)')
+            return
 
         if tabs_only or tabs_before:
             X.XMoveWindow(dpy, window, 0, 0); X.XResizeWindow(dpy, window, 1000, 680)

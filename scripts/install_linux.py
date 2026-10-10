@@ -44,6 +44,11 @@ def main():
                 shutil.copytree(source, app / source.name, dirs_exist_ok=True)
             elif source.is_file():
                 shutil.copyfile(source, app / source.name)
+    else:
+        shutil.copytree(folder / 'shell-integration', app / 'shell-integration', dirs_exist_ok=True)
+        guide = folder.parent / 'docs/shell-integration.md'
+        if guide.exists():
+            shutil.copyfile(guide, app / 'SHELL-INTEGRATION.md')
     icon = folder.parent / 'assets/icons/window-icon.png' if repository else folder / 'opterm.png'
     icons = prefix / 'share/icons/hicolor/256x256/apps'
     icons.mkdir(parents=True, exist_ok=True)

@@ -191,10 +191,21 @@ pub struct Cell {
     pub wide: bool,
     pub underline: bool,
     pub selected: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub search_match: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub search_current: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hyperlink: Option<String>,
+}
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Screen {
     pub cells: Vec<Cell>,
+    #[serde(default)]
+    pub wrapped_rows: Vec<usize>,
     #[serde(default = "default_background")]
     pub background: [u8; 3],
     #[serde(default = "default_cursor_color")]
@@ -207,6 +218,12 @@ pub struct Screen {
     pub title: String,
     pub exited: bool,
     pub error: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub shell_integration: bool,
+    #[serde(default)]
+    pub prompt_navigation: Option<usize>,
 }
 fn default_background() -> [u8; 3] {
     BACKGROUND
@@ -221,6 +238,7 @@ impl Screen {
     pub fn empty() -> Self {
         Self {
             cells: Vec::new(),
+            wrapped_rows: Vec::new(),
             background: BACKGROUND,
             cursor_color: default_cursor_color(),
             selection_color: default_selection_color(),
@@ -229,6 +247,9 @@ impl Screen {
             title: String::new(),
             exited: false,
             error: None,
+            cwd: None,
+            shell_integration: false,
+            prompt_navigation: None,
         }
     }
     pub fn text(&self) -> String {
@@ -267,6 +288,15 @@ pub struct Session {
     process_id: Option<u32>,
     shell_editor: bool,
     input_start: Mutex<Option<InputStart>>,
+    search_state: Mutex<Option<ActiveSearch>>,
+    shell_integration: Arc<Mutex<crate::shell_integration::Integration>>,
+}
+struct ActiveSearch {
+    query: String,
+    options: crate::search::Options,
+    regex: regex::Regex,
+    current: Option<crate::search::Match>,
+    current_index: Option<usize>,
 }
 struct InputStart {
     column: usize,
@@ -429,6 +459,9 @@ impl Session {
                 }
             })?;
         let read_recorder = recorder.clone();
+        let shell_integration =
+            Arc::new(Mutex::new(crate::shell_integration::Integration::default()));
+        let read_integration = shell_integration.clone();
         let term = terminal.clone();
         let read_status = status.clone();
         let read_theme = theme.clone();
@@ -439,6 +472,7 @@ impl Session {
             .name("opterm-pty-read".into())
             .spawn(move || {
                 let mut processor: Processor = Processor::new();
+                let mut integration_stream = crate::shell_integration::Stream::default();
                 let mut buffer = [0; 8192];
                 loop {
                     match reader.read(&mut buffer) {
@@ -449,7 +483,12 @@ impl Session {
                             }
                             let replies = {
                                 let mut terminal = term.lock().unwrap();
-                                processor.advance(&mut *terminal, &buffer[..count]);
+                                integration_stream.advance(
+                                    &mut processor,
+                                    &mut terminal,
+                                    &mut read_integration.lock().unwrap(),
+                                    &buffer[..count],
+                                );
                                 let pending = std::mem::take(&mut *color_replies.lock().unwrap());
                                 let content = terminal.renderable_content();
                                 let theme = read_theme.lock().unwrap();
@@ -519,6 +558,8 @@ impl Session {
             process_id,
             shell_editor,
             input_start: Mutex::new(None),
+            search_state: Mutex::new(None),
+            shell_integration,
         })
     }
 
@@ -548,6 +589,7 @@ impl Session {
             osc52: Osc52::Disabled,
             ..Config::default()
         });
+        self.shell_integration.lock().unwrap().trim(&term);
         *self.history_options.lock().unwrap() = options;
         self.generation.fetch_add(1, Ordering::Relaxed);
         (self.wake)();
@@ -635,6 +677,7 @@ impl Session {
                 ..Config::default()
             });
             term.resize(Size { cols, rows });
+            self.shell_integration.lock().unwrap().invalidate();
         }
         *self.size.lock().unwrap() = new;
         self.generation.fetch_add(1, Ordering::Relaxed);
@@ -643,28 +686,25 @@ impl Session {
     }
 
     pub fn scroll(&self, lines: i32) {
-        self.terminal
-            .lock()
-            .unwrap()
-            .scroll_display(Scroll::Delta(lines));
+        let mut term = self.terminal.lock().unwrap();
+        term.scroll_display(Scroll::Delta(lines));
+        self.shell_integration.lock().unwrap().reset_navigation();
         self.generation.fetch_add(1, Ordering::Relaxed);
         (self.wake)();
     }
 
     pub fn select(&self, row: usize, col: usize, start: bool) {
+        self.select_mode(row, col, start, crate::selection::SelectionMode::Simple);
+    }
+    pub fn select_mode(
+        &self,
+        row: usize,
+        col: usize,
+        start: bool,
+        mode: crate::selection::SelectionMode,
+    ) {
         let mut term = self.terminal.lock().unwrap();
-        let point = viewport_to_point(
-            term.grid().display_offset(),
-            Point::new(
-                row.min(term.screen_lines() - 1),
-                Column(col.min(term.columns() - 1)),
-            ),
-        );
-        if start {
-            term.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
-        } else if let Some(selection) = &mut term.selection {
-            selection.update(point, Side::Right);
-        }
+        crate::selection::apply(&mut term, row, col, start, mode);
         self.generation.fetch_add(1, Ordering::Relaxed);
         (self.wake)();
     }
@@ -889,6 +929,131 @@ impl Session {
         Ok(found)
     }
 
+    /// Enhanced navigation keeps terminal text selection separate from Find highlighting.
+    pub fn search_advanced(
+        &self,
+        query: &str,
+        options: crate::search::Options,
+        backwards: bool,
+        reset: bool,
+    ) -> Result<crate::search::Summary> {
+        let regex = match crate::search::compile(query, options) {
+            Ok(regex) => regex,
+            Err(error) => {
+                // Invalid draft queries must not leave a previous query highlighted.
+                *self.search_state.lock().unwrap() = None;
+                self.generation.fetch_add(1, Ordering::Relaxed);
+                (self.wake)();
+                return Err(error);
+            }
+        };
+        let mut term = self.terminal.lock().unwrap();
+        let mut active = self.search_state.lock().unwrap();
+        let Some(regex) = regex else {
+            *active = None;
+            self.generation.fetch_add(1, Ordering::Relaxed);
+            (self.wake)();
+            return Ok(crate::search::Summary::default());
+        };
+        let scan = crate::search::scan(&term, &regex, crate::search::MAX_SCAN_CELLS, false);
+        let previous = active
+            .as_ref()
+            .filter(|state| !reset && state.query == query && state.options == options)
+            .and_then(|state| state.current.map(|current| (current, state.current_index)));
+        let current = if scan.matches.is_empty() {
+            None
+        } else if let Some(index) = previous.and_then(|(previous, ordinal)| {
+            ordinal
+                .filter(|&index| scan.matches.get(index) == Some(&previous))
+                .or_else(|| scan.matches.iter().position(|found| *found == previous))
+        }) {
+            Some(if backwards {
+                (index + scan.matches.len() - 1) % scan.matches.len()
+            } else {
+                (index + 1) % scan.matches.len()
+            })
+        } else {
+            let offset = term.grid().display_offset();
+            let origin = if backwards {
+                Point::new(
+                    Line(term.screen_lines() as i32 - offset as i32 - 1),
+                    Column(term.columns() - 1),
+                )
+            } else {
+                Point::new(Line(-(offset as i32)), Column(0))
+            };
+            Some(if backwards {
+                scan.matches
+                    .iter()
+                    .rposition(|found| found.start <= origin)
+                    .unwrap_or(scan.matches.len() - 1)
+            } else {
+                scan.matches
+                    .iter()
+                    .position(|found| found.start >= origin)
+                    .unwrap_or(0)
+            })
+        };
+        let selected = current.map(|index| scan.matches[index]);
+        if let Some(found) = selected {
+            term.scroll_to_point(found.start);
+        }
+        *active = Some(ActiveSearch {
+            query: query.to_owned(),
+            options,
+            regex,
+            current: selected,
+            current_index: current,
+        });
+        let summary = crate::search::Summary {
+            count: scan.matches.len(),
+            current: current.map(|index| index + 1),
+            truncated: scan.truncated,
+        };
+        drop(active);
+        drop(term);
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        (self.wake)();
+        Ok(summary)
+    }
+
+    /// Enumerate matches without attachment, scrolling, selection, input or control changes.
+    pub fn search_read_only(
+        &self,
+        regex: &regex::Regex,
+        cells_budget: usize,
+    ) -> (crate::search::Summary, String) {
+        let term = self.terminal.lock().unwrap();
+        let scan = crate::search::scan(
+            &term,
+            regex,
+            cells_budget.min(crate::search::MAX_SCAN_CELLS),
+            false,
+        );
+        (
+            crate::search::Summary {
+                count: scan.matches.len(),
+                current: None,
+                truncated: scan.truncated,
+            },
+            scan.preview,
+        )
+    }
+
+    pub fn navigate_prompt(&self, backwards: bool) -> Result<()> {
+        let mut term = self.terminal.lock().unwrap();
+        self.shell_integration
+            .lock()
+            .unwrap()
+            .navigate(&mut term, backwards)?;
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        (self.wake)();
+        Ok(())
+    }
+    pub fn last_command_output(&self) -> Result<String> {
+        let term = self.terminal.lock().unwrap();
+        self.shell_integration.lock().unwrap().last_output(&term)
+    }
     pub fn selected_text(&self) -> Option<String> {
         self.terminal.lock().unwrap().selection_to_string()
     }
@@ -945,6 +1110,20 @@ impl Session {
 
     pub fn screen(&self) -> Screen {
         let term = self.terminal.lock().unwrap();
+        let active = self.search_state.lock().unwrap();
+        let highlights = active.as_ref().map(|state| {
+            crate::search::scan(&term, &state.regex, crate::search::MAX_SCAN_CELLS, true)
+        });
+        let current = active.as_ref().and_then(|state| state.current);
+        let wrapped_rows = (0..term.screen_lines())
+            .filter(|&row| {
+                let point = viewport_to_point(
+                    term.grid().display_offset(),
+                    Point::new(row, Column(term.columns() - 1)),
+                );
+                term.grid()[point].flags.contains(Flags::WRAPLINE)
+            })
+            .collect();
         let content = term.renderable_content();
         let theme = self.theme.lock().unwrap().clone();
         let color = |color: Color| match color {
@@ -999,7 +1178,14 @@ impl Session {
                 if let Some(chars) = cell.zerowidth() {
                     text.extend(chars);
                 }
+                let search_match = highlights
+                    .as_ref()
+                    .is_some_and(|scan| scan.contains(indexed.point));
                 Some(Cell {
+                    search_match,
+                    search_current: current.is_some_and(|found| found.contains(indexed.point))
+                        && search_match,
+                    hyperlink: cell.hyperlink().map(|link| link.uri().to_owned()),
                     row: point.line,
                     col: point.column.0,
                     text,
@@ -1014,8 +1200,10 @@ impl Session {
             })
             .collect();
         let status = self.status.lock().unwrap();
+        let integration = self.shell_integration.lock().unwrap();
         Screen {
             cells,
+            wrapped_rows,
             background: color(Color::Named(
                 alacritty_terminal::vte::ansi::NamedColor::Background,
             )),
@@ -1031,6 +1219,9 @@ impl Session {
                 .unwrap_or_else(|| status.title.clone()),
             exited: status.exited,
             error: status.error.clone(),
+            cwd: integration.cwd.clone(),
+            shell_integration: integration.seen,
+            prompt_navigation: integration.target_row(&term),
         }
     }
 }

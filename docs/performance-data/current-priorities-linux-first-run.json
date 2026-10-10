@@ -1,0 +1,378 @@
+{
+  "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+  "renderer": "Private Xvfb, LIBGL_ALWAYS_SOFTWARE=1; AccessKit inactive",
+  "method": "Matched fixed raw Python fixture; actual XTest key events to first sampled fixture-color pixel. Includes 2ms polling/XGetImage overhead; RSS is procfs not PSS/peak. OS caches warm; sequential baseline then candidate.",
+  "measured_at_utc": "2026-10-10T21:05:33Z",
+  "baseline": {
+    "binary": "/home/jarod/Dev/extdev/projects/opterm/target/perf-baseline-opterm",
+    "sha256": "e45e0004267993ec6e65e121e7b013ab0207dd467db628e3a38fc33d8c61e499",
+    "idle_attached": {
+      "seconds": 3.002,
+      "desktop": {
+        "rss_mib": 161.387,
+        "cpu_percent_one_core": 32.317
+      },
+      "service": {
+        "rss_mib": 8.523,
+        "cpu_percent_one_core": 5.331
+      },
+      "hosted_fixture": {
+        "rss_mib": 11.625,
+        "cpu_percent_one_core": 0.0
+      }
+    },
+    "key_to_pixel_idle": {
+      "samples": 31,
+      "median_ms": 28.347,
+      "p95_ms": 35.948,
+      "maximum_ms": 36.378,
+      "samples_ms": [
+        24.399,
+        29.474,
+        28.782,
+        30.153,
+        34.124,
+        29.737,
+        35.948,
+        36.378,
+        23.988,
+        29.153,
+        29.85,
+        24.064,
+        26.784,
+        29.097,
+        25.299,
+        28.347,
+        27.634,
+        24.321,
+        28.164,
+        25.816,
+        24.765,
+        29.022,
+        30.429,
+        29.093,
+        27.195,
+        24.712,
+        29.515,
+        24.578,
+        28.866,
+        28.267,
+        27.258
+      ]
+    },
+    "key_to_pixel_during_output": {
+      "samples": 15,
+      "median_ms": 33.245,
+      "p95_ms": 36.335,
+      "maximum_ms": 36.335,
+      "samples_ms": [
+        30.602,
+        36.335,
+        34.923,
+        31.754,
+        32.853,
+        28.98,
+        35.128,
+        33.705,
+        27.875,
+        34.138,
+        33.245,
+        35.936,
+        31.738,
+        28.143,
+        34.224
+      ]
+    },
+    "output_while_typing": {
+      "bytes": 11927552,
+      "visible_completion_ms": 980.172,
+      "visible_throughput_mib_s": 11.605,
+      "fixture_write_seconds": 0.8917448020001757
+    },
+    "resize_to_fixture_pixel_ms": 50.693,
+    "idle_detached": {
+      "seconds": 3.001,
+      "service": {
+        "rss_mib": 9.035,
+        "cpu_percent_one_core": 7.332
+      },
+      "hosted_fixture": {
+        "rss_mib": 11.625,
+        "cpu_percent_one_core": 0.0
+      }
+    },
+    "detached_output": {
+      "bytes": 11927552,
+      "grid_completion_ms": 721.918,
+      "throughput_mib_s": 15.757,
+      "session_pid_retained": true
+    },
+    "startup": {
+      "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+      "binary": "/home/jarod/Dev/extdev/projects/opterm/target/perf-baseline-opterm",
+      "binary_sha256": "e45e0004267993ec6e65e121e7b013ab0207dd467db628e3a38fc33d8c61e499",
+      "measured_at_utc": "2026-10-10T21:05:43.716116+00:00",
+      "renderer": "Xvfb; LIBGL_ALWAYS_SOFTWARE=1",
+      "repetitions": 3,
+      "opterm_cold": [
+        {
+          "shell_ready_ms": 183.3322769998631,
+          "visible_output_ms": 293.4155869997994
+        },
+        {
+          "shell_ready_ms": 180.64138499994442,
+          "visible_output_ms": 272.8326209999068
+        },
+        {
+          "shell_ready_ms": 173.70593099985854,
+          "visible_output_ms": 283.17684499961615
+        }
+      ],
+      "opterm_reconnect": [
+        {
+          "shell_ready_ms": null,
+          "visible_output_ms": 180.99989199981792
+        },
+        {
+          "shell_ready_ms": null,
+          "visible_output_ms": 182.0778989995233
+        },
+        {
+          "shell_ready_ms": null,
+          "visible_output_ms": 178.1182650001938
+        }
+      ],
+      "gnome_cold": [],
+      "opterm_idle": {
+        "seconds": 3.0000801989999673,
+        "processes": [
+          {
+            "pid": 333371,
+            "command": "perf-baseline-o",
+            "rss_mib": 161.17,
+            "cpu_percent_one_core": 28.0
+          },
+          {
+            "pid": 333415,
+            "command": "perf-baseline-o",
+            "rss_mib": 10.37,
+            "cpu_percent_one_core": 5.67
+          },
+          {
+            "pid": 333426,
+            "command": "sh",
+            "rss_mib": 1.82,
+            "cpu_percent_one_core": 0.0
+          }
+        ]
+      },
+      "summary_ms": {
+        "opterm_cold": {
+          "shell_ready_ms": {
+            "median": 180.64,
+            "minimum": 173.71,
+            "maximum": 183.33
+          },
+          "visible_output_ms": {
+            "median": 283.18,
+            "minimum": 272.83,
+            "maximum": 293.42
+          }
+        },
+        "opterm_reconnect": {
+          "visible_output_ms": {
+            "median": 181.0,
+            "minimum": 178.12,
+            "maximum": 182.08
+          }
+        }
+      }
+    }
+  },
+  "candidate": {
+    "binary": "/home/jarod/Dev/extdev/projects/opterm/target/release/opterm",
+    "sha256": "acbaf05041c1c8fa4915d2ef6f3c1543628f32d54a3727fcc12f433f56168154",
+    "idle_attached": {
+      "seconds": 3.001,
+      "desktop": {
+        "rss_mib": 163.383,
+        "cpu_percent_one_core": 27.987
+      },
+      "service": {
+        "rss_mib": 10.848,
+        "cpu_percent_one_core": 5.331
+      },
+      "hosted_fixture": {
+        "rss_mib": 11.625,
+        "cpu_percent_one_core": 0.0
+      }
+    },
+    "key_to_pixel_idle": {
+      "samples": 31,
+      "median_ms": 30.789,
+      "p95_ms": 43.809,
+      "maximum_ms": 50.794,
+      "samples_ms": [
+        30.51,
+        42.483,
+        31.351,
+        36.144,
+        41.422,
+        35.115,
+        29.129,
+        43.194,
+        36.995,
+        50.794,
+        37.621,
+        30.789,
+        27.605,
+        24.335,
+        25.578,
+        26.037,
+        26.338,
+        32.886,
+        23.627,
+        26.024,
+        26.553,
+        26.8,
+        30.411,
+        24.239,
+        28.173,
+        40.759,
+        40.413,
+        43.809,
+        33.937,
+        31.585,
+        24.064
+      ]
+    },
+    "key_to_pixel_during_output": {
+      "samples": 15,
+      "median_ms": 40.214,
+      "p95_ms": 70.301,
+      "maximum_ms": 70.301,
+      "samples_ms": [
+        39.242,
+        32.675,
+        39.722,
+        40.608,
+        34.439,
+        45.338,
+        42.138,
+        36.775,
+        32.533,
+        45.141,
+        40.214,
+        39.903,
+        44.355,
+        70.301,
+        56.797
+      ]
+    },
+    "output_while_typing": {
+      "bytes": 11927552,
+      "visible_completion_ms": 1135.722,
+      "visible_throughput_mib_s": 10.016,
+      "fixture_write_seconds": 1.0373224160002792
+    },
+    "resize_to_fixture_pixel_ms": 154.292,
+    "idle_detached": {
+      "seconds": 3.001,
+      "service": {
+        "rss_mib": 11.742,
+        "cpu_percent_one_core": 5.332
+      },
+      "hosted_fixture": {
+        "rss_mib": 11.625,
+        "cpu_percent_one_core": 0.0
+      }
+    },
+    "detached_output": {
+      "bytes": 11927552,
+      "grid_completion_ms": 720.173,
+      "throughput_mib_s": 15.795,
+      "session_pid_retained": true
+    },
+    "startup": {
+      "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+      "binary": "/home/jarod/Dev/extdev/projects/opterm/target/release/opterm",
+      "binary_sha256": "acbaf05041c1c8fa4915d2ef6f3c1543628f32d54a3727fcc12f433f56168154",
+      "measured_at_utc": "2026-10-10T21:06:00.293607+00:00",
+      "renderer": "Xvfb; LIBGL_ALWAYS_SOFTWARE=1",
+      "repetitions": 3,
+      "opterm_cold": [
+        {
+          "shell_ready_ms": 179.2140899997321,
+          "visible_output_ms": 282.2824289996788
+        },
+        {
+          "shell_ready_ms": 175.11369699968782,
+          "visible_output_ms": 272.5275100001454
+        },
+        {
+          "shell_ready_ms": 192.66019200040319,
+          "visible_output_ms": 287.4119470006917
+        }
+      ],
+      "opterm_reconnect": [
+        {
+          "shell_ready_ms": null,
+          "visible_output_ms": 167.20298800009914
+        },
+        {
+          "shell_ready_ms": null,
+          "visible_output_ms": 168.99762799948803
+        },
+        {
+          "shell_ready_ms": null,
+          "visible_output_ms": 234.99983700003213
+        }
+      ],
+      "gnome_cold": [],
+      "opterm_idle": {
+        "seconds": 3.002996367000378,
+        "processes": [
+          {
+            "pid": 334977,
+            "command": "opterm",
+            "rss_mib": 163.58,
+            "cpu_percent_one_core": 28.64
+          },
+          {
+            "pid": 335015,
+            "command": "opterm",
+            "rss_mib": 9.22,
+            "cpu_percent_one_core": 5.0
+          },
+          {
+            "pid": 335020,
+            "command": "sh",
+            "rss_mib": 1.82,
+            "cpu_percent_one_core": 0.0
+          }
+        ]
+      },
+      "summary_ms": {
+        "opterm_cold": {
+          "shell_ready_ms": {
+            "median": 179.21,
+            "minimum": 175.11,
+            "maximum": 192.66
+          },
+          "visible_output_ms": {
+            "median": 282.28,
+            "minimum": 272.53,
+            "maximum": 287.41
+          }
+        },
+        "opterm_reconnect": {
+          "visible_output_ms": {
+            "median": 169.0,
+            "minimum": 167.2,
+            "maximum": 235.0
+          }
+        }
+      }
+    }
+  }
+}

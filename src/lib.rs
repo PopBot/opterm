@@ -1,10 +1,17 @@
+pub mod accessibility;
 pub mod agents;
+pub mod copy_mode;
 pub mod history;
 pub mod layout;
 pub mod layouts;
+pub mod links;
 pub mod profiles;
+pub mod readability;
+pub mod search;
+pub mod selection;
 pub mod service;
 pub mod settings;
+pub mod shell_integration;
 pub mod shortcuts;
 pub mod storage;
 pub mod terminal;

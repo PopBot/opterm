@@ -199,3 +199,404 @@ fn older_hello_deserializes_without_search_capability() {
     .unwrap();
     assert!(matches!(reply, Reply::Hello { search: false, .. }));
 }
+
+#[test]
+fn enhanced_search_counts_navigates_and_preserves_manual_selection() {
+    use opterm::search::{Case, Mode, Options};
+    let session = Session::spawn(
+        &[
+            "/bin/sh".into(),
+            "-c".into(),
+            "printf 'Foo foo FOO selected\\r\\n'; sleep 10".into(),
+        ],
+        || {},
+    )
+    .unwrap();
+    wait_for(&session, |screen| screen.text().contains("selected"));
+    session.select(0, 12, true);
+    session.select(0, 19, false);
+    let selected = session.selected_text();
+    assert_eq!(selected.as_deref(), Some("selected"));
+    let options = Options {
+        mode: Mode::Literal,
+        case: Case::Insensitive,
+    };
+    for ordinal in [1, 2, 3, 1] {
+        let result = session
+            .search_advanced(
+                "foo",
+                options,
+                false,
+                ordinal == 1 && session.screen().cells.iter().all(|cell| !cell.search_match),
+            )
+            .unwrap();
+        assert_eq!(result.count, 3);
+        assert_eq!(result.current, Some(ordinal));
+        assert!(!result.truncated);
+        assert_eq!(session.selected_text(), selected);
+        let screen = session.screen();
+        assert_eq!(
+            screen.cells.iter().filter(|cell| cell.search_match).count(),
+            9
+        );
+        assert_eq!(
+            screen
+                .cells
+                .iter()
+                .filter(|cell| cell.search_current)
+                .count(),
+            3
+        );
+        assert_eq!(screen.cells.iter().filter(|cell| cell.selected).count(), 8);
+    }
+    let previous = session
+        .search_advanced("foo", options, true, false)
+        .unwrap();
+    assert_eq!(previous.current, Some(3));
+    let result = session
+        .search_advanced(
+            "F..",
+            Options {
+                mode: Mode::Regex,
+                case: Case::Sensitive,
+            },
+            false,
+            true,
+        )
+        .unwrap();
+    assert_eq!(result.count, 2);
+    assert!(session.screen().cells.iter().any(|cell| cell.search_match));
+    let generation = session
+        .generation
+        .load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        session
+            .search_advanced(
+                "[",
+                Options {
+                    mode: Mode::Regex,
+                    case: Case::Sensitive
+                },
+                false,
+                true
+            )
+            .is_err()
+    );
+    assert_eq!(session.selected_text(), selected);
+    assert!(
+        session
+            .screen()
+            .cells
+            .iter()
+            .all(|cell| !cell.search_match && !cell.search_current)
+    );
+    assert!(
+        session
+            .generation
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > generation
+    );
+    assert_eq!(
+        session
+            .search_advanced("", options, false, true)
+            .unwrap()
+            .count,
+        0
+    );
+    assert!(session.screen().cells.iter().all(|cell| !cell.search_match));
+    assert_eq!(session.selected_text(), selected);
+}
+
+fn wait_advanced(client: &Client, token: u64) -> opterm::service::client::AdvancedSearchResult {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        for result in client.take_advanced_search_results() {
+            if result.token == token {
+                return result;
+            }
+        }
+        assert!(Instant::now() < deadline, "Enhanced search result timeout");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+fn wait_all(client: &Client, token: u64) -> opterm::search::AllSummary {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        for result in client.take_all_search_results() {
+            if result.token == token {
+                return result.result.unwrap();
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "All-session search result timeout"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn enhanced_ipc_errors_are_local_and_all_session_scan_does_not_take_control() {
+    use opterm::search::{Case, Mode, Options};
+    let service = Service::start();
+    let mut owner = Connection::connect(service.directory.path()).unwrap();
+    assert!(owner.advanced_search_supported);
+    assert!(owner.smart_selection_supported);
+    let program = vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        "printf 'target TARGET target\\r\\n'; sleep 10".into(),
+    ];
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let Reply::Snapshot(snapshot) = owner.call(Request::Create(program.clone())).unwrap()
+        else {
+            panic!("Expected new session");
+        };
+        ids.push(snapshot.info.id);
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    for id in &ids {
+        loop {
+            let Reply::Snapshot(snapshot) = owner
+                .call(Request::View {
+                    id: *id,
+                    since: None,
+                })
+                .unwrap()
+            else {
+                panic!("Expected snapshot");
+            };
+            if snapshot.screen.text().contains("target TARGET target") {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    owner
+        .call(Request::SelectMode {
+            id: ids[0],
+            row: 0,
+            col: 1,
+            start: true,
+            mode: opterm::selection::SelectionMode::Semantic,
+        })
+        .unwrap();
+    let Reply::Snapshot(before) = owner
+        .call(Request::View {
+            id: ids[0],
+            since: None,
+        })
+        .unwrap()
+    else {
+        panic!("Expected snapshot");
+    };
+    assert_eq!(before.selected_text.as_deref(), Some("target"));
+    owner.call(Request::Detach(ids[1])).unwrap();
+    let observer = Client::open_with(
+        service.directory.path(),
+        Launch::legacy(&[]),
+        false,
+        Reconnect::Fresh,
+        false,
+        || {},
+    )
+    .unwrap();
+    assert!(observer.view_updates().0.is_empty());
+    observer
+        .search_all(
+            "target",
+            Options {
+                case: Case::Insensitive,
+                mode: Mode::Literal,
+            },
+            50,
+        )
+        .unwrap();
+    let results = wait_all(&observer, 50);
+    assert!(!results.truncated);
+    assert_eq!(
+        results
+            .sessions
+            .iter()
+            .map(|session| session.id)
+            .collect::<Vec<_>>(),
+        ids
+    );
+    assert!(
+        results
+            .sessions
+            .iter()
+            .all(|session| session.summary.count == 3
+                && session.summary.current.is_none()
+                && session.preview.contains("TARGET"))
+    );
+    let Reply::Snapshot(after) = owner
+        .call(Request::View {
+            id: ids[0],
+            since: None,
+        })
+        .unwrap()
+    else {
+        panic!("Expected snapshot");
+    };
+    assert_eq!(after.selected_text, before.selected_text);
+    assert_eq!(after.screen.text(), before.screen.text());
+    assert_eq!(after.revision, before.revision);
+    assert!(after.info.controlled);
+    let Reply::List(infos) = owner.call(Request::List).unwrap() else {
+        panic!("Expected list");
+    };
+    assert!(
+        !infos
+            .iter()
+            .find(|info| info.id == ids[1])
+            .unwrap()
+            .attached
+    );
+    assert!(observer.view_updates().0.is_empty());
+    observer
+        .search_advanced(ids[0], "target", Options::default(), false, true, 51)
+        .unwrap();
+    assert!(
+        wait_advanced(&observer, 51)
+            .result
+            .unwrap_err()
+            .contains("controlled in another window")
+    );
+    observer.send(Request::Attach(ids[0])).unwrap();
+    // FIFO guarantees attachment finishes before search; it must not steal ownership.
+    observer
+        .search_advanced(ids[0], "target", Options::default(), false, true, 52)
+        .unwrap();
+    assert!(
+        wait_advanced(&observer, 52)
+            .result
+            .unwrap_err()
+            .contains("controlled in another window")
+    );
+    // A controlled client reports invalid regex as a request-scoped asynchronous error.
+    let controller = Client::open_with(
+        service.directory.path(),
+        Launch::legacy(&program),
+        true,
+        Reconnect::Fresh,
+        true,
+        || {},
+    )
+    .unwrap();
+    let id = controller
+        .infos()
+        .iter()
+        .find(|info| info.controlled)
+        .unwrap()
+        .id;
+    controller
+        .search_advanced(
+            id,
+            "[",
+            Options {
+                mode: Mode::Regex,
+                case: Case::Sensitive,
+            },
+            false,
+            true,
+            53,
+        )
+        .unwrap();
+    assert!(
+        wait_advanced(&controller, 53)
+            .result
+            .unwrap_err()
+            .contains("Invalid search expression")
+    );
+    assert!(controller.take_error().is_none());
+    assert!(observer.take_error().is_none());
+}
+
+#[test]
+fn regex_navigation_distinguishes_combining_char_matches_in_the_same_cell() {
+    use opterm::search::{Case, Mode, Options};
+    let session = Session::spawn(
+        &["/bin/sh".into(), "-c".into(), "printf 'é'; sleep 10".into()],
+        || {},
+    )
+    .unwrap();
+    wait_for(&session, |screen| screen.text().contains("é"));
+    let options = Options {
+        mode: Mode::Regex,
+        case: Case::Sensitive,
+    };
+    for (reset, ordinal) in [(true, 1), (false, 2), (false, 1)] {
+        let summary = session
+            .search_advanced("e|\\p{M}", options, false, reset)
+            .unwrap();
+        assert_eq!(summary.count, 2);
+        assert_eq!(summary.current, Some(ordinal));
+    }
+}
+
+#[test]
+fn ipc_snapshot_preserves_search_and_osc8_spaces_and_wrapped_gaps() {
+    use opterm::search::Options;
+    let service = Service::start();
+    let mut owner = Connection::connect(service.directory.path()).unwrap();
+    let script = "printf 'a b\\r\\n'; printf '\\033]8;;https://example.com/blank\\033\\\\ \\033]8;;\\033\\\\\\r\\n'; printf '%-100s' 'https://example.com/'; printf 'suffix\\r\\n'; sleep 10";
+    let Reply::Snapshot(created) = owner
+        .call(Request::Create(vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            script.into(),
+        ]))
+        .unwrap()
+    else {
+        panic!("Expected snapshot");
+    };
+    let id = created.info.id;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let screen = loop {
+        let Reply::Snapshot(snapshot) = owner.call(Request::View { id, since: None }).unwrap()
+        else {
+            panic!("Expected snapshot");
+        };
+        if snapshot.screen.text().contains("suffix") {
+            break snapshot.screen;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(10));
+    };
+    let blank_link = screen
+        .cells
+        .iter()
+        .find(|cell| cell.hyperlink.as_deref() == Some("https://example.com/blank"))
+        .expect("OSC8 blank label must survive sparse IPC");
+    assert_eq!(blank_link.text, " ");
+    assert!(screen.wrapped_rows.contains(&2));
+    assert!(
+        screen
+            .cells
+            .iter()
+            .any(|cell| cell.row == 2 && cell.col == 99 && cell.text == " ")
+    );
+    let link = opterm::links::link_at(&screen, 2, 5, None).unwrap();
+    assert_eq!(link.target, "https://example.com/");
+    owner
+        .call(Request::SearchAdvanced {
+            id,
+            query: "a b".into(),
+            options: Options::default(),
+            backwards: false,
+            reset: true,
+            token: 1,
+        })
+        .unwrap();
+    let Reply::Snapshot(snapshot) = owner.call(Request::View { id, since: None }).unwrap() else {
+        panic!("Expected snapshot");
+    };
+    assert!(snapshot.screen.cells.iter().any(|cell| cell.row == 0
+        && cell.col == 1
+        && cell.text == " "
+        && cell.search_match
+        && cell.search_current));
+}

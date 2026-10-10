@@ -29,15 +29,37 @@ struct State {
     visible: Vec<u64>,
     created: VecDeque<Option<u64>>,
     searched: VecDeque<SearchResult>,
+    advanced_searched: VecDeque<AdvancedSearchResult>,
+    all_searched: VecDeque<AllSearchResult>,
+    outputs: VecDeque<OutputResult>,
     error: Option<String>,
     disconnected: bool,
 }
 impl State {
+    fn output_result(&mut self, result: OutputResult) {
+        if self.outputs.len() == 16 {
+            self.outputs.pop_front();
+        }
+        self.outputs.push_back(result);
+    }
     fn search_result(&mut self, result: SearchResult) {
         if self.searched.len() == 128 {
             self.searched.pop_front();
         }
         self.searched.push_back(result);
+    }
+    fn advanced_search_result(&mut self, result: AdvancedSearchResult) {
+        if self.advanced_searched.len() == 128 {
+            self.advanced_searched.pop_front();
+        }
+        self.advanced_searched.push_back(result);
+    }
+    fn all_search_result(&mut self, result: AllSearchResult) {
+        // Each result may carry previews for 256 sessions; retain at most 8.
+        if self.all_searched.len() == 8 {
+            self.all_searched.pop_front();
+        }
+        self.all_searched.push_back(result);
     }
     fn snapshot(&mut self, snapshot: Snapshot) {
         let id = snapshot.info.id;
@@ -71,14 +93,33 @@ pub struct SearchResult {
     pub result: std::result::Result<bool, String>,
 }
 
+pub struct AdvancedSearchResult {
+    pub id: u64,
+    pub token: u64,
+    pub result: std::result::Result<crate::search::Summary, String>,
+}
+pub struct AllSearchResult {
+    pub token: u64,
+    pub result: std::result::Result<crate::search::AllSummary, String>,
+}
+
+pub struct OutputResult {
+    pub id: u64,
+    pub token: u64,
+    pub result: std::result::Result<String, String>,
+}
+
 pub struct Client {
     sender: SyncSender<(Request, usize)>,
     state: Arc<Mutex<State>>,
     queued: Arc<AtomicUsize>,
     pub profiles: bool,
     pub search_supported: bool,
+    pub advanced_search_supported: bool,
     pub history_supported: bool,
     pub click_edit_supported: bool,
+    pub smart_selection_supported: bool,
+    pub shell_integration_supported: bool,
     pub instance: String,
 }
 impl Client {
@@ -188,8 +229,11 @@ impl Client {
         }
         let profiles = connection.profiles;
         let search_supported = connection.search_supported;
+        let advanced_search_supported = connection.advanced_search_supported;
         let history_supported = connection.history_supported;
         let click_edit_supported = connection.click_edit_supported;
+        let smart_selection_supported = connection.smart_selection_supported;
+        let shell_integration_supported = connection.shell_integration_supported;
         let instance = connection.instance.clone();
         state.visible = state.views.iter().copied().collect();
         let state = Arc::new(Mutex::new(state));
@@ -201,8 +245,11 @@ impl Client {
             queued: queued.clone(),
             profiles,
             search_supported,
+            advanced_search_supported,
             history_supported,
             click_edit_supported,
+            smart_selection_supported,
+            shell_integration_supported,
             instance,
         });
         thread::Builder::new().name("opterm-service-client".into()).spawn(move || {
@@ -222,6 +269,12 @@ impl Client {
                                     { let mut state = state.lock().unwrap();
                                     if let Request::Search { id, token, .. } = &request {
                                         state.search_result(SearchResult { id: *id, token: *token, result: Err(format!("{error:#}")) });
+                                    } else if let Request::SearchAdvanced { id, token, .. } = &request {
+                                        state.advanced_search_result(AdvancedSearchResult { id: *id, token: *token, result: Err(format!("{error:#}")) });
+                                    } else if let Request::SearchAll { token, .. } = &request {
+                                        state.all_search_result(AllSearchResult { token: *token, result: Err(format!("{error:#}")) });
+                                    } else if let Request::LastCommandOutput { id, token } = &request {
+                                        state.output_result(OutputResult { id: *id, token: *token, result: Err(format!("{error:#}")) });
                                     } else {
                                         state.error = Some(format!("{error:#}"));
                                     }
@@ -301,6 +354,26 @@ impl Client {
             "Running service predates scrollback search. Existing sessions stay running."
         );
         ensure!(
+            self.advanced_search_supported
+                || !matches!(
+                    &request,
+                    Request::SearchAdvanced { .. } | Request::SearchAll { .. }
+                ),
+            "Running service predates enhanced Find. Existing sessions stay running."
+        );
+        ensure!(
+            self.smart_selection_supported || !matches!(&request, Request::SelectMode { .. }),
+            "Running service predates smart selection. Existing sessions stay running."
+        );
+        ensure!(
+            self.shell_integration_supported
+                || !matches!(
+                    &request,
+                    Request::Prompt { .. } | Request::LastCommandOutput { .. }
+                ),
+            "Running service predates shell integration. Existing sessions stay running."
+        );
+        ensure!(
             self.profiles || !matches!(&request, Request::CreateProfile(_) | Request::Themes(_)),
             "Running service predates profiles/themes. Existing work stays running; finish its sessions before deliberately stopping the service, or try an isolated OPTERM_STATE_DIR."
         );
@@ -314,7 +387,9 @@ impl Client {
             Request::Create(_) | Request::CreateProfile(_) | Request::Themes(_) => {
                 serde_json::to_vec(&request)?.len() + 128
             }
-            Request::Search { query, .. } => query.len() + 128,
+            Request::Search { query, .. }
+            | Request::SearchAdvanced { query, .. }
+            | Request::SearchAll { query, .. } => query.len() + 128,
             _ => 512,
         };
         // Keep this bounded reservation compatible with Rust versions before
@@ -341,6 +416,15 @@ impl Client {
         }
         Ok(())
     }
+    pub fn prompt(&self, id: u64, backwards: bool) -> Result<()> {
+        self.send(Request::Prompt { id, backwards })
+    }
+    pub fn copy_last_output(&self, id: u64, token: u64) -> Result<()> {
+        self.send(Request::LastCommandOutput { id, token })
+    }
+    pub fn take_output_results(&self) -> Vec<OutputResult> {
+        self.state.lock().unwrap().outputs.drain(..).collect()
+    }
     pub fn configure_history(&self, options: &crate::history::Options) -> Result<()> {
         options.validate()?;
         self.send(Request::ConfigHistory(options.clone()))
@@ -365,6 +449,55 @@ impl Client {
             reset,
             token,
         })
+    }
+    pub fn search_advanced(
+        &self,
+        id: u64,
+        query: &str,
+        options: crate::search::Options,
+        backwards: bool,
+        reset: bool,
+        token: u64,
+    ) -> Result<()> {
+        ensure!(
+            query.len() <= crate::search::MAX_QUERY_BYTES,
+            "Search text exceeds 4096 bytes"
+        );
+        self.send(Request::SearchAdvanced {
+            id,
+            query: query.to_owned(),
+            options,
+            backwards,
+            reset,
+            token,
+        })
+    }
+    pub fn search_all(
+        &self,
+        query: &str,
+        options: crate::search::Options,
+        token: u64,
+    ) -> Result<()> {
+        ensure!(
+            query.len() <= crate::search::MAX_QUERY_BYTES,
+            "Search text exceeds 4096 bytes"
+        );
+        self.send(Request::SearchAll {
+            query: query.to_owned(),
+            options,
+            token,
+        })
+    }
+    pub fn take_advanced_search_results(&self) -> Vec<AdvancedSearchResult> {
+        self.state
+            .lock()
+            .unwrap()
+            .advanced_searched
+            .drain(..)
+            .collect()
+    }
+    pub fn take_all_search_results(&self) -> Vec<AllSearchResult> {
+        self.state.lock().unwrap().all_searched.drain(..).collect()
     }
     pub fn take_search_results(&self) -> Vec<SearchResult> {
         self.state.lock().unwrap().searched.drain(..).collect()
@@ -395,6 +528,29 @@ impl Client {
 }
 
 fn update(state: &mut State, request: &Request, reply: Reply) {
+    if let Reply::LastCommandOutput { id, token, text } = reply {
+        state.output_result(OutputResult {
+            id,
+            token,
+            result: Ok(text),
+        });
+        return;
+    }
+    if let Reply::SearchAdvanced { id, token, summary } = reply {
+        state.advanced_search_result(AdvancedSearchResult {
+            id,
+            token,
+            result: Ok(summary),
+        });
+        return;
+    }
+    if let Reply::SearchAll { token, summary } = reply {
+        state.all_search_result(AllSearchResult {
+            token,
+            result: Ok(summary),
+        });
+        return;
+    }
     if let Reply::Search { id, token, found } = reply {
         state.search_result(SearchResult {
             id,
@@ -533,6 +689,24 @@ impl RemoteSession {
             row,
             col,
             start,
+        })
+    }
+    pub fn select_mode(
+        &self,
+        row: usize,
+        col: usize,
+        start: bool,
+        mode: crate::selection::SelectionMode,
+    ) -> Result<()> {
+        if !self.client.smart_selection_supported {
+            return self.select(row, col, start);
+        }
+        self.client.send(Request::SelectMode {
+            id: self.id,
+            row,
+            col,
+            start,
+            mode,
         })
     }
     pub fn click_edit(&self, row: usize, col: usize) -> Result<()> {

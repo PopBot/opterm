@@ -118,7 +118,7 @@ impl Dialog {
         let footer = 136.0;
         egui::ScrollArea::vertical().max_height((ui.available_height() - footer).max(160.0)).show(ui, |ui| {
             match self.section {
-                0 => appearance(ui, &mut self.draft.appearance, fonts),
+                0 => appearance(ui, &mut self.draft.appearance, &mut self.draft.readability, fonts),
                 1 => {
                     shortcuts(ui, &mut self.draft);
 
@@ -200,7 +200,12 @@ impl Dialog {
         });
     }
 }
-fn appearance(ui: &mut egui::Ui, a: &mut Appearance, fonts: &[String]) {
+fn appearance(
+    ui: &mut egui::Ui,
+    a: &mut Appearance,
+    readability: &mut opterm::readability::Readability,
+    fonts: &[String],
+) {
     egui::Grid::new("appearance-form")
         .min_col_width(110.0)
         .spacing([28.0, 7.0])
@@ -265,6 +270,35 @@ fn appearance(ui: &mut egui::Ui, a: &mut Appearance, fonts: &[String]) {
                 });
             ui.end_row();
         });
+    ui.separator();
+    ui.label(egui::RichText::new("Readability").strong());
+    egui::Grid::new("readability-form")
+        .min_col_width(180.0)
+        .spacing([28.0, 7.0])
+        .show(ui, |ui| {
+            ui.label("Minimum text contrast");
+            ui.add(
+                egui::Slider::new(&mut readability.minimum_contrast, 1.0..=7.0)
+                    .fixed_decimals(1)
+                    .suffix(" : 1"),
+            );
+            ui.end_row();
+            ui.label("Inactive pane dimming");
+            ui.add(
+                egui::Slider::new(&mut readability.inactive_pane_dim, 0.0..=0.7)
+                    .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+            );
+            ui.end_row();
+        });
+    ui.checkbox(
+        &mut readability.automatic_cursor_contrast,
+        "Automatically improve cursor contrast",
+    );
+    ui.checkbox(
+        &mut readability.cursor_line_guide,
+        "Highlight the cursor's line",
+    );
+    ui.weak("Contrast 1.0 and dimming 0% preserve theme colors. Find cursor briefly marks its location; customize its shortcut below.");
     ui.add_space(10.0);
     let (rect, _) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), 82.0), egui::Sense::hover());
@@ -307,9 +341,30 @@ fn shortcuts(ui: &mut egui::Ui, draft: &mut Settings) {
     for (heading, actions) in [
         (
             "Windows & tabs",
-            &[NewTab, NewWindow, Close, NextTab, PreviousTab][..],
+            &[
+                NewTab,
+                NewWindow,
+                Close,
+                UndoClose,
+                QuickSwitch,
+                NextTab,
+                PreviousTab,
+            ][..],
         ),
-        ("Terminal", &[Copy, Paste, Search, Settings][..]),
+        (
+            "Terminal",
+            &[
+                Copy,
+                Paste,
+                Search,
+                CopyMode,
+                FindCursor,
+                PreviousPrompt,
+                NextPrompt,
+                CopyLastOutput,
+                Settings,
+            ][..],
+        ),
         (
             "Split panes",
             &[

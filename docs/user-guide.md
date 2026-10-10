@@ -83,7 +83,7 @@ To run agents side by side, create a split and launch one agent in each pane, or
 ## Close, detach, reconnect, or end work
 
 - **Close a desktop window:** its shells and agents continue in the independent service. Reopen Opterm to restore its saved arrangement and reconnect.
-- **Detach a pane/tab:** remove its view while keeping its work alive. Use the **Sessions** menu to reattach it.
+- **Detach a pane/tab:** remove its view while keeping its work alive. Use **Sessions**, the quick switcher, or **Undo close** to reopen it.
 - **Read-only session:** another window controls its input. Choose **… → Take control** if you intend to make this window the controller.
 - **End a session:** choose **… → End session…** and confirm. This stops its process; it is different from closing a view.
 
@@ -91,11 +91,37 @@ Continuity lasts while the service and processes remain alive. Reboot, logout, s
 
 ## Copy, paste, scroll, and search
 
-Drag over terminal text to select it, then use Copy. Paste uses the focused pane and preserves clipboard text and line breaks without adding Enter. If pasted text already contains line breaks, the running shell or program decides how to handle them.
+Drag over terminal text to select it, then use Copy. Double-click a word, triple-click a logical line (including soft wraps), or hold **Alt** while dragging for a rectangular selection. Paste uses the focused pane and preserves clipboard text and line breaks without adding Enter. If pasted text already contains line breaks, the running shell or program decides how to handle them.
 
 Copy-on-select is initially off. Enable it under **Settings → Shortcuts & clipboard** if desired. In mouse-aware terminal programs, clicks, drags, and wheel events go to the program; hold **Shift** to use local terminal selection or scrollback instead.
 
-Press the Search scrollback shortcut to open the compact Find row. It searches literal, case-sensitive text in the focused session's bounded live scrollback. **Enter / Next** advances, **Shift+Enter / Previous** goes backward, and **Escape / ×** closes the row. Search wraps around. This is live scrollback search, not a saved transcript archive.
+Press the Search scrollback shortcut to open the compact Find row. Choose literal text or **Regex**, and **Smart case**, **Case sensitive**, or **Ignore case**. Smart case ignores case unless the query contains an uppercase letter. The row shows the current match and count; visible matches are highlighted. **Enter / Next** advances, **Shift+Enter / Previous** goes backward, and **Escape / ×** closes Find. Search wraps around.
+
+Choose **All sessions** to show matching sessions and output previews. This scan does not change another session's selection, scroll offset, or input controller. Click a result to focus a local pane or reconnect its existing session. A session controlled in another window opens as an observed view; use **Take control** explicitly before navigating its scrollback.
+
+Search uses bounded live scrollback, including retained ended-session output. It has scan, match, and time limits; a **+ / bounded** indicator means the count is a lower bound, not a complete total. It does not search saved output files or build a history index. Older running services retain literal, case-sensitive Find until deliberately upgraded after their work is finished.
+
+## Keyboard copy mode
+
+Choose **… → Keyboard copy mode** or its shortcut. Opterm freezes a bounded snapshot of the visible terminal while the service and shell keep running. The compact banner identifies the mode. Use arrows or **h/j/k/l**, **Ctrl/Alt+Left/Right** for words, **Home/End**, and **PageUp/PageDown**. Hold **Shift** to extend a selection or press **V** to toggle a mark. **Enter** copies the selection (or current line when nothing is selected) and returns to live input; **Escape** returns without copying. The banner also provides buttons for both actions.
+
+Copy-mode keys stay out of the shell. The snapshot covers the viewed screen rather than all retained scrollback; scroll to the desired text before entering. It is capped at 65,536 cells and 1 MiB, with a visible notice if truncated.
+
+![Keyboard copy mode](screenshots/prototype-copy-mode-linux.png)
+
+## Clickable links
+
+Hold **Ctrl** on Linux/Windows or **Cmd** on macOS and click a recognized link to open it with the system application. Right-click it for **Open link** or **Copy link**. Opterm recognizes supported OSC 8 hyperlinks, detected HTTP/HTTPS and mail links, local file URLs, and absolute file paths. Soft-wrapped visible links can be recognized across rows. Only an explicit click or menu action opens a target.
+
+When a TUI owns the mouse, hold **Shift** as well to use local link/selection gestures. Relative file paths resolve only when opt-in shell integration supplies a validated local working directory through OSC 7. Opterm does not guess the directory from the desktop or a profile's launch folder.
+
+## Quick switching and Undo close
+
+Open **Sessions → Quick session switcher…**, **… → Quick session switcher…**, or the shortcut below. Type words from a session title, manual tab name, or profile. The picker orders sessions by recent use in this window. Use **↑ / ↓**, **Enter**, and **Escape**, or click a result. Existing local panes are focused; detached sessions reconnect without starting another shell. Other windows' sessions open as clearly labeled observed views and keep their existing input controller.
+
+Choose **Sessions → Undo close**, **… → Undo close**, or its shortcut to reopen the last closed tab or pane. Opterm keeps up to **20** recent closes in this window's memory; this list clears when the desktop closes. Undo restores the original service/session references, manual name, focus, and split layout. If the remaining panes have since changed, the closed branch reopens separately instead of replacing those changes or duplicating views.
+
+Surviving sessions reconnect; ended sessions show retained output; unavailable sessions remain explicit unavailable panes. Undo never reruns commands or resurrects a process.
 
 ## Default keyboard shortcuts
 
@@ -108,6 +134,12 @@ These are defaults; saved custom bindings take precedence. **Alt** is the Option
 | Detach focused pane | Ctrl+Shift+W | Cmd+W |
 | Copy / paste | Ctrl+Shift+C / Ctrl+Shift+V | Cmd+C / Cmd+V |
 | Search scrollback | Ctrl+Shift+F | Cmd+F |
+| Quick session switcher | Ctrl+Shift+P | Cmd+P |
+| Undo close | Ctrl+Shift+Z | Cmd+Shift+T |
+| Keyboard copy mode | Ctrl+Shift+Space | Cmd+Shift+Space |
+| Find cursor | Ctrl+Shift+J | Cmd+Shift+J |
+| Previous / next prompt | Ctrl+Alt+PageUp / PageDown | Cmd+Alt+PageUp / PageDown |
+| Copy last command output | Ctrl+Shift+Alt+C | Cmd+Shift+Alt+C |
 | Settings | Ctrl+Shift+, | Cmd+, |
 | Split right | Ctrl+Shift+E | Cmd+D |
 | Split below | Ctrl+Shift+O | Cmd+Shift+D |
@@ -115,15 +147,40 @@ These are defaults; saved custom bindings take precedence. **Alt** is the Option
 | Resize nearest divider | Ctrl+Shift+Alt+Arrow | Cmd+Alt+Shift+Arrow |
 | Maximize / restore pane | Ctrl+Shift+Enter | Cmd+Shift+Enter |
 
-Open **Settings → Shortcuts & clipboard** to change a binding. Enter a chord such as `Ctrl+Shift+T` or `Cmd+D`; the settings editor uses `Comma` for the comma key. Clear a binding to disable it. Duplicate action bindings are rejected: explicitly unbind the other action before reassignment. **Reset defaults** restores platform defaults in the draft; **Save** applies them, while **Cancel** discards the change. Next tab and Previous tab are available for assignment but have no default binding.
+Open **Settings → Shortcuts & clipboard** to change a binding. Enter a chord such as `Ctrl+Shift+T` or `Cmd+D`; the settings editor uses `Comma` for the comma key. Clear a binding to disable it. Duplicate action bindings are rejected: explicitly unbind the other action before reassignment. **Reset defaults** restores platform defaults in the draft; **Save** applies them, while **Cancel** discards the change. Next tab and Previous tab are available for assignment but have no default binding. Existing settings gain new action defaults only when those keys are unclaimed; explicit custom or empty bindings remain unchanged.
 
 ## Appearance settings
 
-Open **… → Settings… → Appearance**. Adjust app appearance, installed monospace font, text size, horizontal/vertical padding, line height, and cursor shape. Application chrome can follow the system or use Dark/Light. Terminal colors come from the session's profile theme.
+Open **… → Settings… → Appearance**. Adjust app appearance, installed monospace font, text size, horizontal/vertical padding, line height, and cursor shape. Application chrome can follow the system or use Dark/Light. Terminal colors come from the session's profile theme. **Readability** adds optional minimum text contrast, automatic cursor contrast, a cursor-line guide, and inactive-pane dimming. Defaults preserve the theme colors. **Find cursor** briefly marks the cursor with a ring.
 
 Settings use a draft: **Save** validates, persists, and applies the changes; **Cancel** or closing Settings discards the draft. Appearance changes do not restart shells or agents.
 
 ![Compact appearance settings](screenshots/prototype-settings-linux.png)
+
+![Readability controls](screenshots/prototype-readability-linux.png)
+
+## Prompt-aware shell integration
+
+Bash and zsh integration is explicit and opt-in. Source the bundled script in the shell you want to enhance; Opterm does not edit startup files. For a default Linux installation:
+
+```sh
+# In Bash:
+source ~/.local/share/opterm/shell-integration/opterm.bash
+# In zsh:
+source ~/.local/share/opterm/shell-integration/opterm.zsh
+```
+
+Use **Previous prompt**, **Next prompt**, and **Copy last command output** from the terminal menu or shortcuts. Copies exclude echoed input and prompts, preserve hard line breaks, and join soft wraps. Metadata stays bounded in live memory. Resize or destructive terminal edits invalidate old boundaries; a fresh prompt restores tracking. See [supported shells, marker limits, and setup details](shell-integration.md).
+
+## Native accessibility
+
+The terminal exposes its title, viewed text, caret, selection, and focus through AccessKit's native accessibility bridges. Text updates are coalesced and bounded to 128 rows, 512 columns, and 32 KiB. Active-output notices are throttled; output does not move focus. Icon-only terminal controls have descriptive labels.
+
+Automated Linux AT-SPI checks ran with Orca active and confirmed readable text, caret, focus, and selected-word ranges. Audible screen-reader usability, VoiceOver, NVDA, and native macOS/Windows behavior still require platform checks.
+
+## Performance evidence
+
+See [the current priority measurements](performance-current-priorities.md) for matched release-build startup, input latency under output, throughput, resize, CPU, and memory evidence. Private-display software-renderer measurements do not establish real-GPU or cross-platform superiority.
 
 ## Launch profiles
 

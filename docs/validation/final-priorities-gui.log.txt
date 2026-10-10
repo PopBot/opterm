@@ -1,0 +1,9 @@
+Keyboard copy selection screenshot: /home/jarod/Dev/extdev/projects/opterm/target/priorities-copy-selection-linux.png
+Frozen keyboard selection copies exact native clipboard bytes; background service output continues: passed
+Copy mode ignored keys/Escape/Enter never leak terminal input and preserve original shell PID: passed
+Native inactive pane dimming, cursor-line guide and Find cursor marker: passed
+Readability settings screenshot: /home/jarod/Dev/extdev/projects/opterm/target/priorities-readability-settings-linux.png
+Prompt navigation screenshot: /home/jarod/Dev/extdev/projects/opterm/target/priorities-shell-prompts-linux.png
+Opt-in Bash prompt navigation, exact Copy last output and live OSC7 cwd metadata: passed
+Live cwd relative link screenshot: /home/jarod/Dev/extdev/projects/opterm/target/priorities-cwd-link-linux.png
+Relative file link uses live OSC7 cwd and copies its resolved local path: passed

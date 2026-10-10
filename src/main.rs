@@ -1,9 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod find_ui;
 mod ime;
 mod input;
 mod profiles_ui;
 mod provider_ui;
+mod session_controls;
 mod settings_ui;
 use opterm::{
     layout::{Axis, Layout},
@@ -78,12 +80,7 @@ enum Startup {
     Receive(String),
 }
 
-struct Search {
-    session: u64,
-    query: String,
-    status: String,
-    token: u64,
-}
+use find_ui::Search;
 
 fn restore_node(
     node: &Node,
@@ -124,6 +121,13 @@ fn restore_node(
     }
 }
 
+struct PendingUndo {
+    closed: session_controls::ClosedTab,
+    requested: Vec<SessionRef>,
+    attaching: bool,
+    started: Instant,
+}
+
 struct App {
     tabs: Vec<Tab>,
     client: Option<Arc<Client>>,
@@ -151,6 +155,17 @@ struct App {
     pending_copy: Option<(u64, Instant)>,
     search: Option<Search>,
     search_token: u64,
+    copy_mode: Option<(u64, opterm::copy_mode::CopyMode)>,
+    find_cursor: Option<(u64, Instant)>,
+    output_token: u64,
+    switcher: Option<session_controls::Switcher>,
+    recently_used: session_controls::RecentlyUsed,
+    recent_focus: Option<SessionRef>,
+    recent_closed: VecDeque<session_controls::ClosedTab>,
+    pending_undo: Option<PendingUndo>,
+    pending_switch: Option<SessionRef>,
+    pending_switch_wait: bool,
+    session_notice: Option<String>,
     dragged_tab: Option<u64>,
     drag_hover: Option<(u64, Instant)>,
     outgoing: Option<(u64, transfers::Pending)>,
@@ -321,6 +336,17 @@ impl App {
             pending_copy: None,
             search: None,
             search_token: 0,
+            copy_mode: None,
+            find_cursor: None,
+            output_token: 0,
+            switcher: None,
+            recently_used: session_controls::RecentlyUsed::default(),
+            recent_focus: None,
+            recent_closed: VecDeque::new(),
+            pending_undo: None,
+            pending_switch: None,
+            pending_switch_wait: false,
+            session_notice: None,
             dragged_tab: None,
             drag_hover: None,
             outgoing: None,
@@ -535,6 +561,7 @@ impl App {
     }
 
     fn open_settings(&mut self) {
+        self.copy_mode = None;
         if self.settings_dialog.is_none() {
             self.settings_dialog = Some(settings_ui::Dialog::new(&self.settings));
         }
@@ -661,7 +688,7 @@ impl App {
     }
 
     fn sync_tabs(&mut self) {
-        let Some(client) = &self.client else {
+        let Some(client) = self.client.clone() else {
             return;
         };
         let (mut views, created) = client.view_updates();
@@ -722,12 +749,45 @@ impl App {
                 }
             }
         }
-        for id in views {
-            if !self.tabs.iter().any(|t| t.layout.contains(id)) {
+        for &id in &views {
+            let reserved = self.pending_undo.as_ref().is_some_and(|pending| {
+                pending
+                    .requested
+                    .iter()
+                    .any(|reference| reference.matches(&client.instance, &[id]))
+            });
+            if !reserved && !self.tabs.iter().any(|t| t.layout.contains(id)) {
                 self.tabs.push(Self::tab(id, self.panes[&id].name()));
                 self.active = self.tabs.len() - 1;
             }
         }
+        self.finish_undo(&views);
+        if self.pending_switch_wait
+            && let Some(reference) = &self.pending_switch
+            && !self.leaving.contains(&reference.id)
+        {
+            match client.send(Request::Attach(reference.id)) {
+                Ok(()) => self.pending_switch_wait = false,
+                Err(error) => {
+                    self.error = Some(format!("Switch session: {error:#}"));
+                    self.pending_switch = None;
+                    self.pending_switch_wait = false;
+                }
+            }
+        }
+        if !self.pending_switch_wait
+            && let Some(reference) = self.pending_switch.clone()
+            && let Some(index) = self
+                .tabs
+                .iter()
+                .position(|tab| tab.layout.contains(reference.id))
+            && reference.instance == client.instance
+        {
+            self.active = index;
+            self.tabs[index].focused = reference.id;
+            self.pending_switch = None;
+        }
+        self.remember_focus();
         if let Some(error) = client.take_error() {
             self.error = Some(error);
         }
@@ -757,6 +817,7 @@ impl App {
         {
             return;
         }
+        self.close_search();
         if let Some(client) = &self.client {
             let request = self.settings.current.launch(profile).and_then(|launch| {
                 if client.profiles { Ok(Request::CreateProfile(Box::new(launch))) }
@@ -832,39 +893,52 @@ impl App {
         }
     }
     fn detach(&mut self) {
-        if self.outgoing.as_ref().is_some_and(|(key, _)| {
-            self.tabs
-                .get(self.active)
-                .is_some_and(|tab| tab.key == *key)
-        }) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        if self
+            .outgoing
+            .as_ref()
+            .is_some_and(|(key, _)| *key == tab.key)
+        {
             return;
         }
-        if let Some(tab) = self.tabs.get(self.active)
-            && self.missing.remove(&tab.focused).is_some()
-        {
-            let ids: Vec<u64> = tab
-                .layout
-                .ids()
-                .into_iter()
-                .filter(|id| *id != tab.focused)
-                .collect();
-            if let Some(layout) = tab.layout.clone().retain(&ids) {
-                let tab = &mut self.tabs[self.active];
-                tab.focused = ids[0];
-                tab.layout = layout;
-                tab.maximized = false;
-            } else {
-                self.tabs.remove(self.active);
-                self.active = self.active.min(self.tabs.len().saturating_sub(1));
+        if tab.layout.ids().len() == 1 {
+            self.close_tab(tab.key);
+            return;
+        }
+        let id = tab.focused;
+        let mut closed = self.closed_tab(self.active);
+        let references = closed.tab.layout.sessions();
+        let focused = closed.tab.focused;
+        closed.closed = vec![references[focused].clone()];
+        closed.survivors = references
+            .into_iter()
+            .filter(|r| !closed.closed.contains(r))
+            .collect();
+        self.close_search();
+        if self.panes.contains_key(&id) {
+            let Some(client) = &self.client else { return };
+            if let Err(error) = client.send(Request::Detach(id)) {
+                self.error = Some(format!("Close pane: {error:#}"));
+                return;
             }
-            return;
+            self.leaving.push(id);
         }
-        if let Some(session) = self.focused_session()
-            && let Some(client) = &self.client
-            && let Err(error) = client.send(Request::Detach(session.id))
-        {
-            self.error = Some(format!("{error:#}"));
-        }
+        self.remember_closed(closed);
+        let remaining: Vec<_> = self.tabs[self.active]
+            .layout
+            .ids()
+            .into_iter()
+            .filter(|other| *other != id)
+            .collect();
+        let tab = &mut self.tabs[self.active];
+        tab.layout = tab.layout.clone().retain(&remaining).unwrap();
+        tab.focused = remaining[0];
+        tab.maximized = false;
+        self.missing.remove(&id);
+        self.panes.remove(&id);
+        self.close_search();
     }
     fn detach_tab(&mut self) {
         if let Some(tab) = self.tabs.get(self.active) {
@@ -882,17 +956,35 @@ impl App {
         let Some(index) = self.tabs.iter().position(|tab| tab.key == key) else {
             return;
         };
+        let mut closed = self.closed_tab(index);
         let ids = self.tabs[index].layout.ids();
+        self.close_search();
+        let mut detached = Vec::new();
         for id in &ids {
             if self.panes.contains_key(id) {
                 let Some(client) = &self.client else { return };
                 if let Err(error) = client.send(Request::Detach(*id)) {
+                    if !detached.is_empty() {
+                        closed
+                            .closed
+                            .retain(|reference| detached.contains(&reference.id));
+                        closed.survivors = closed
+                            .tab
+                            .layout
+                            .sessions()
+                            .into_iter()
+                            .filter(|reference| !detached.contains(&reference.id))
+                            .collect();
+                        self.remember_closed(closed);
+                    }
                     self.error = Some(format!("Close tab: {error:#}"));
                     return;
                 }
                 self.leaving.push(*id);
+                detached.push(*id);
             }
         }
+        self.remember_closed(closed);
         let active = self.tabs.get(self.active).map(|tab| tab.key);
         self.tabs.remove(index);
         for id in ids {
@@ -905,6 +997,429 @@ impl App {
         self.search = None;
         self.rename = None;
     }
+    fn closed_tab(&self, index: usize) -> session_controls::ClosedTab {
+        let tab = &self.tabs[index];
+        let saved = self.saved_tab(tab);
+        session_controls::ClosedTab {
+            closed: saved.layout.sessions(),
+            survivors: Vec::new(),
+            tab: saved,
+            key: tab.key,
+            index,
+        }
+    }
+    fn remember_closed(&mut self, closed: session_controls::ClosedTab) {
+        self.recent_closed.push_front(closed);
+        self.recent_closed
+            .truncate(session_controls::RECENT_CLOSE_LIMIT);
+        self.session_notice = None;
+    }
+    fn displayed_sessions(&self) -> Vec<(u64, Vec<SessionRef>)> {
+        self.tabs
+            .iter()
+            .map(|tab| (tab.key, self.saved_tab(tab).layout.sessions()))
+            .collect()
+    }
+    fn undo_close(&mut self) {
+        if self.pending_undo.is_some() {
+            return;
+        }
+        let Some(closed) = self.recent_closed.pop_front() else {
+            self.session_notice = Some("No recently closed views in this window.".into());
+            return;
+        };
+        let Some(client) = self.client.clone() else {
+            self.recent_closed.push_front(closed);
+            self.error =
+                Some("Session service unavailable. Undo close did not launch new work.".into());
+            return;
+        };
+        let Some(plan) = closed.plan(&self.displayed_sessions()) else {
+            if let Some(reference) = closed.closed.first() {
+                self.select_session(reference.clone());
+            }
+            self.session_notice =
+                Some("That session is already visible; no duplicate view was created.".into());
+            return;
+        };
+        let infos = client.infos();
+        let mut requested = Vec::new();
+        for reference in plan.tab.layout.sessions() {
+            if closed.closed.contains(&reference)
+                && reference.instance == client.instance
+                && infos.iter().any(|info| info.id == reference.id)
+            {
+                requested.push(reference);
+            }
+        }
+        self.pending_undo = Some(PendingUndo {
+            closed,
+            requested,
+            attaching: false,
+            started: Instant::now(),
+        });
+        self.session_notice = Some("Restoring closed views…".into());
+        self.close_search();
+    }
+    fn finish_undo(&mut self, views: &[u64]) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let Some(pending) = &mut self.pending_undo else {
+            return;
+        };
+        if !pending.attaching {
+            let waiting = pending
+                .requested
+                .iter()
+                .any(|reference| self.leaving.contains(&reference.id));
+            if waiting && pending.started.elapsed() < Duration::from_secs(5) {
+                return;
+            }
+            if waiting {
+                pending.requested.clear();
+                self.session_notice =
+                    Some("Closing views did not respond. Undo will show unavailable panes.".into());
+            } else {
+                pending.requested.retain(|reference| {
+                    match client.send(Request::Attach(reference.id)) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            self.error = Some(format!(
+                                "Undo close: {error:#}. Unavailable panes will remain explicit."
+                            ));
+                            false
+                        }
+                    }
+                });
+            }
+            pending.attaching = true;
+            pending.started = Instant::now();
+            if !pending.requested.is_empty() {
+                return;
+            }
+        }
+        let ready = pending
+            .requested
+            .iter()
+            .all(|reference| views.contains(&reference.id));
+        if !ready && pending.started.elapsed() < Duration::from_secs(5) {
+            return;
+        }
+        let pending = self.pending_undo.take().unwrap();
+        let Some(plan) = pending.closed.plan(&self.displayed_sessions()) else {
+            self.session_notice = Some("Closed views were already reopened.".into());
+            return;
+        };
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        if !ready {
+            // Queued detach follows any late attach, preventing an extra view
+            // from appearing after the unavailable placeholders are restored.
+            for reference in pending
+                .requested
+                .iter()
+                .filter(|reference| !views.contains(&reference.id))
+            {
+                let _ = client.send(Request::Detach(reference.id));
+            }
+        }
+        let layout = restore_node(
+            &plan.tab.layout,
+            &client.instance,
+            views,
+            &mut self.missing,
+            &mut self.next_local,
+        );
+        let ids = layout.ids();
+        let focused = ids[plan.tab.focused];
+        let ended = client
+            .infos()
+            .iter()
+            .any(|info| info.exited && ids.contains(&info.id));
+        let unavailable = ids.iter().any(|id| self.missing.contains_key(id));
+        let replace = plan
+            .replace
+            .and_then(|key| self.tabs.iter().position(|tab| tab.key == key));
+        let key = replace
+            .map(|index| self.tabs[index].key)
+            .unwrap_or_else(|| {
+                let key = self.next_local;
+                self.next_local -= 1;
+                key
+            });
+        let tab = Tab {
+            key,
+            layout,
+            focused,
+            name: plan.tab.name,
+            maximized: plan.tab.maximized,
+        };
+        if let Some(index) = replace {
+            let previous = std::mem::replace(&mut self.tabs[index], tab);
+            for id in previous.layout.ids() {
+                self.missing.remove(&id);
+            }
+            self.active = index;
+        } else {
+            let index = pending.closed.index.min(self.tabs.len());
+            self.tabs.insert(index, tab);
+            self.active = index;
+        }
+        self.session_notice = Some(
+            if unavailable {
+                "Closed layout restored. Unavailable sessions are shown; commands were not rerun."
+            } else if ended {
+                "Closed layout restored with ended-session output; commands were not rerun."
+            } else {
+                "Closed views restored to their existing sessions."
+            }
+            .into(),
+        );
+    }
+    fn remember_focus(&mut self) {
+        let Some(client) = &self.client else { return };
+        let Some(id) = self.tabs.get(self.active).map(|tab| tab.focused) else {
+            return;
+        };
+        if !self.panes.contains_key(&id) {
+            return;
+        }
+        let reference = SessionRef {
+            instance: client.instance.clone(),
+            id,
+        };
+        if self.recent_focus.as_ref() != Some(&reference) {
+            self.recently_used.visit(reference.clone());
+            self.recent_focus = Some(reference);
+        }
+    }
+    fn session_candidates(&self) -> Vec<session_controls::Candidate> {
+        let Some(client) = &self.client else {
+            return Vec::new();
+        };
+        let mut candidates: Vec<_> = client
+            .infos()
+            .into_iter()
+            .map(|info| {
+                let local_tab = self.tabs.iter().find(|tab| tab.layout.contains(info.id));
+                let tab_name = local_tab.and_then(|tab| tab.name.as_deref());
+                let remote_tab_name = self
+                    .destinations
+                    .iter()
+                    .flat_map(|window| &window.tabs)
+                    .find(|tab| {
+                        tab.layout
+                            .sessions()
+                            .iter()
+                            .any(|session| session.matches(&client.instance, &[info.id]))
+                    })
+                    .and_then(|tab| tab.name.as_deref());
+                let title = tab_name
+                    .or(info.name.as_deref())
+                    .or(remote_tab_name)
+                    .unwrap_or(if info.title.is_empty() {
+                        "Shell"
+                    } else {
+                        &info.title
+                    });
+                let title: String = title
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(120)
+                    .collect();
+                let profile = info
+                    .profile
+                    .as_ref()
+                    .map(|profile| profile.name.as_str())
+                    .unwrap_or("Shell");
+                let state = if local_tab.is_some() {
+                    "This window"
+                } else if info.attached {
+                    "Other window · observe only"
+                } else {
+                    "Detached · reconnect"
+                };
+                let detail = format!(
+                    "{profile} · {state}{} · #{}",
+                    if info.exited { " · ended" } else { "" },
+                    info.id
+                );
+                let search = format!(
+                    "{title} {} {} {profile} {state} #{}",
+                    info.title,
+                    info.name.as_deref().unwrap_or_default(),
+                    info.id
+                );
+                session_controls::Candidate {
+                    session: SessionRef {
+                        instance: client.instance.clone(),
+                        id: info.id,
+                    },
+                    title,
+                    detail,
+                    search,
+                }
+            })
+            .collect();
+        candidates.sort_by_key(|candidate| {
+            (
+                self.recently_used.rank(&candidate.session),
+                candidate.session.id,
+            )
+        });
+        candidates
+    }
+    fn open_switcher(&mut self) {
+        self.copy_mode = None;
+        self.close_search();
+        self.remember_focus();
+        self.switcher = Some(session_controls::Switcher {
+            focus_query: true,
+            ..Default::default()
+        });
+        self.ui_input_consumed = true;
+    }
+    fn select_session(&mut self, reference: SessionRef) {
+        let Some(client) = &self.client else { return };
+        if reference.instance != client.instance {
+            self.error = Some(
+                "Session belongs to an unavailable service instance. No new work was launched."
+                    .into(),
+            );
+            return;
+        }
+        if let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| tab.layout.contains(reference.id))
+        {
+            self.active = index;
+            self.tabs[index].focused = reference.id;
+            self.close_search();
+            self.remember_focus();
+            return;
+        }
+        let Some(info) = client
+            .infos()
+            .into_iter()
+            .find(|info| info.id == reference.id)
+        else {
+            self.error = Some("Session no longer exists. No new work was launched.".into());
+            return;
+        };
+        if self
+            .pending_undo
+            .as_ref()
+            .is_some_and(|pending| pending.requested.contains(&reference))
+        {
+            self.session_notice = Some("This session is being restored by Undo close.".into());
+            return;
+        }
+        let wait = self.leaving.contains(&reference.id);
+        let result = if wait {
+            Ok(())
+        } else {
+            client.send(Request::Attach(reference.id))
+        };
+        match result {
+            Ok(()) => {
+                self.pending_switch_wait = wait;
+                self.pending_switch = Some(reference);
+                self.session_notice = Some(if info.exited {
+                    "Opening ended-session output; commands were not rerun."
+                } else if info.attached {
+                    "Opening an observed view. Use Take control explicitly to type into this session."
+                } else {
+                    "Reconnecting to the existing detached session."
+                }.into());
+            }
+            Err(error) => self.error = Some(format!("Switch session: {error:#}")),
+        }
+    }
+    fn show_switcher(&mut self, ctx: &egui::Context) {
+        let Some(mut switcher) = self.switcher.take() else {
+            return;
+        };
+        self.ui_input_consumed = true;
+        let candidates = self.session_candidates();
+        let mut chosen = None;
+        let down = ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::ArrowDown));
+        let up = ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::ArrowUp));
+        let enter = ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Enter));
+        let result = egui::Modal::new(egui::Id::new("quick-session-switcher")).show(ctx, |ui| {
+            ui.set_width((ctx.content_rect().width() - 48.0).clamp(240.0, 560.0));
+            ui.heading("Switch session");
+            ui.add_space(8.0);
+            let input = ui.add(
+                egui::TextEdit::singleline(&mut switcher.query)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Search title, tab name or profile…"),
+            );
+            if switcher.focus_query {
+                input.request_focus();
+                switcher.focus_query = false;
+            }
+            if input.changed() {
+                switcher.selected = 0;
+            }
+            let filtered: Vec<_> = candidates
+                .iter()
+                .filter(|candidate| candidate.matches(&switcher.query))
+                .collect();
+            switcher.selected = switcher.selected.min(filtered.len().saturating_sub(1));
+            if !filtered.is_empty() {
+                if down {
+                    switcher.selected = (switcher.selected + 1) % filtered.len();
+                }
+                if up {
+                    switcher.selected = (switcher.selected + filtered.len() - 1) % filtered.len();
+                }
+            }
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical()
+                .id_salt("quick-session-results")
+                .max_height((ctx.content_rect().height() - 220.0).clamp(100.0, 360.0))
+                .show(ui, |ui| {
+                    if filtered.is_empty() {
+                        ui.weak("No matching live or ended sessions.");
+                    }
+                    for (index, candidate) in filtered.iter().enumerate() {
+                        let response = ui.add(
+                            egui::Button::new(format!("{}\n{}", candidate.title, candidate.detail))
+                                .selected(index == switcher.selected)
+                                .min_size(Vec2::new(ui.available_width(), 46.0)),
+                        );
+                        if response.clicked() {
+                            chosen = Some(candidate.session.clone());
+                        }
+                        if index == switcher.selected && (down || up || input.changed()) {
+                            response.scroll_to_me(Some(egui::Align::Center));
+                        }
+                    }
+                });
+            if enter {
+                chosen = filtered
+                    .get(switcher.selected)
+                    .map(|candidate| candidate.session.clone());
+            }
+            ui.add_space(6.0);
+            ui.weak("Up / Down to choose · Enter to open · Esc to cancel");
+            ui.weak("Other windows open as observed views; control stays with their owner.");
+        });
+        if let Some(reference) = chosen {
+            self.select_session(reference);
+            ctx.memory_mut(|memory| {
+                if let Some(id) = memory.focused() {
+                    memory.surrender_focus(id);
+                }
+            });
+        } else if !result.should_close() {
+            self.switcher = Some(switcher);
+        }
+    }
+
     fn maximize(&mut self) {
         if self.outgoing.as_ref().is_some_and(|(key, _)| {
             self.tabs
@@ -993,6 +1508,7 @@ impl App {
         let mut move_request = None;
         let mut close_request = None;
         let mut split_request = None;
+        let mut search_close = false;
         let mut tab_rects = Vec::new();
         egui::TopBottomPanel::top("tabs")
             .exact_height(30.0)
@@ -1052,6 +1568,7 @@ impl App {
                                                 let close = ui.add_enabled(!moving, egui::Button::new("×")
                                                     .frame(false).min_size(Vec2::new(22.0, 20.0)))
                                                     .on_hover_text("Close tab · sessions stay available in Sessions");
+                                                close.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, !moving, "Close terminal tab"));
                                                 if close.clicked() { close_request = Some(tab.key); }
                                                 (label, close)
                                             }).inner
@@ -1065,7 +1582,7 @@ impl App {
                                     }
                                     if response.clicked() {
                                         self.active = index;
-                                        self.search = None;
+                                        search_close = true;
                                     }
                                     menu_response.context_menu(|ui| {
                                         if ui
@@ -1131,6 +1648,7 @@ impl App {
                     let plus = ui
                         .button("+")
                         .on_hover_text("New default-profile tab; right-click to choose a profile");
+                    plus.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "New terminal tab"));
                     if plus.clicked() {
                         self.new_tab();
                     }
@@ -1141,56 +1659,49 @@ impl App {
                         self.open_settings();
                     }
                     ui.menu_button("Sessions", |ui| {
-                        if let Some(client) = &self.client {
-                            for info in client.infos() {
-                                let name =
-                                    info.name.as_deref().unwrap_or(if info.title.is_empty() {
-                                        "Shell"
-                                    } else {
-                                        &info.title
-                                    });
-                                let state = if info.exited {
-                                    "ended"
-                                } else if info.attached {
-                                    "live"
-                                } else {
-                                    "detached"
-                                };
-                                if ui
-                                    .add(provider_ui::button(
-                                        ui,
-                                        info.provider,
-                                        format!(
-                                            "{} · {} · {}",
-                                            info.id,
-                                            name.chars().take(30).collect::<String>(),
-                                            state
-                                        ),
-                                    ))
-                                    .clicked()
-                                {
-                                    if self.tabs.iter().any(|tab| tab.layout.contains(info.id)) {
-                                        self.active = self
-                                            .tabs
-                                            .iter()
-                                            .position(|t| t.layout.contains(info.id))
-                                            .unwrap();
-                                        self.tabs[self.active].focused = info.id;
-                                    } else if let Err(error) = client.send(Request::Attach(info.id))
-                                    {
-                                        self.error = Some(format!("{error:#}"));
-                                    }
-                                    ui.close();
-                                }
+                        if ui.button("Quick session switcher…").clicked() {
+                            self.open_switcher();
+                            ui.close();
+                        }
+                        if ui.add_enabled(!self.recent_closed.is_empty() && self.pending_undo.is_none(), egui::Button::new("Undo close")).clicked() {
+                            self.undo_close();
+                            ui.close();
+                        }
+                        ui.separator();
+                        for candidate in self.session_candidates() {
+                            if ui.button(format!("{} · {}", candidate.title, candidate.detail)).clicked() {
+                                self.select_session(candidate.session);
+                                ui.close();
                             }
                         }
+                        if let Some(notice) = &self.session_notice { ui.weak(notice); }
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.menu_button("...", |ui| {
+                        let menu = ui.menu_button("...", |ui| {
                             if ui.button("Settings…").clicked() {
                                 self.open_settings();
                                 ui.close();
                             }
+                            ui.separator();
+                            if ui.button("Quick session switcher…").clicked() {
+                                self.open_switcher();
+                                ui.close();
+                            }
+                            if ui.add_enabled(!self.recent_closed.is_empty() && self.pending_undo.is_none(), egui::Button::new("Undo close")).clicked() {
+                                self.undo_close();
+                                ui.close();
+                            }
+                            if let Some(notice) = &self.session_notice { ui.weak(notice); }
+                            ui.separator();
+                            if ui.button("Keyboard copy mode").clicked() { self.open_copy_mode(); ui.close(); }
+                            if ui.button("Find cursor").clicked() {
+                                if let Some(session) = self.focused_session() { self.find_cursor = Some((session.id, Instant::now())); }
+                                ui.close();
+                            }
+                            let integrated = self.client.as_ref().is_some_and(|client| client.shell_integration_supported);
+                            if ui.add_enabled(integrated, egui::Button::new("Previous prompt")).clicked() { self.prompt(true); ui.close(); }
+                            if ui.add_enabled(integrated, egui::Button::new("Next prompt")).clicked() { self.prompt(false); ui.close(); }
+                            if ui.add_enabled(integrated, egui::Button::new("Copy last command output")).clicked() { self.copy_last_output(); ui.close(); }
                             ui.separator();
                             if ui.button("New tab").clicked() {
                                 self.new_tab();
@@ -1301,9 +1812,13 @@ impl App {
                                 ui.close();
                             }
                         });
+                        menu.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Terminal actions"));
                     });
                 });
             });
+        if search_close {
+            self.close_search();
+        }
         if let Some((index, axis)) = split_request {
             self.active = index;
             self.split(axis);
@@ -1527,7 +2042,14 @@ impl App {
                 }
             });
         if let Some(client) = &self.client {
-            client.visible(self.pane_rects.iter().map(|(id, _)| *id).collect());
+            let frozen = self.copy_mode.as_ref().map(|(id, _)| *id);
+            client.visible(
+                self.pane_rects
+                    .iter()
+                    .map(|(id, _)| *id)
+                    .filter(|id| Some(*id) != frozen)
+                    .collect(),
+            );
         }
         if let Some(tab) = self.tabs.get(self.active) {
             let automatic = self.pane_title(tab.focused);
@@ -1562,6 +2084,7 @@ impl App {
             .is_some_and(|tab| tab.focused == id)
             && self.settings_dialog.is_none()
             && self.search.is_none()
+            && self.switcher.is_none()
             && self.rename.is_none()
             && self.error.is_none()
             && self.end_session.is_none()
@@ -1598,15 +2121,56 @@ impl App {
                 ((pos.x - rect.left()).max(0.0) / width) as usize,
             )
         };
-        let local_selection =
-            !input::mouse_reporting(session.mode()) || ctx.input(|i| i.modifiers.shift);
+        let copy_mode = self
+            .copy_mode
+            .as_ref()
+            .filter(|(pane, _)| *pane == id)
+            .map(|(_, mode)| mode);
+        let screen = copy_mode.map_or_else(|| session.screen(), |mode| mode.screen());
+        let gestures_enabled = copy_mode.is_none()
+            && self.search.is_none()
+            && self.switcher.is_none()
+            && self.settings_dialog.is_none()
+            && self.rename.is_none()
+            && self.error.is_none()
+            && self.end_session.is_none();
+        let modifiers = ctx.input(|i| i.modifiers);
+        let local_selection = gestures_enabled
+            && opterm::selection::uses_local_selection(
+                input::mouse_reporting(session.mode()),
+                modifiers.shift,
+            );
+        let hover_point = response.hover_pos().map(point);
+        let hovered_link = hover_point.and_then(|(row, col)| {
+            opterm::links::link_at(
+                &screen,
+                row,
+                col,
+                screen.cwd.as_deref().map(std::path::Path::new),
+            )
+        });
+        let link_gesture = modifiers.ctrl || modifiers.mac_cmd;
+        if local_selection
+            && link_gesture
+            && let Some(link) = &hovered_link
+        {
+            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+            response
+                .clone()
+                .on_hover_text(format!("Open {}", link.target));
+        }
         if local_selection
             && response.drag_started()
             && let Some(pos) = ctx.input(|i| i.pointer.press_origin())
         {
             let (row, col) = point(pos);
             if session.controlled()
-                && let Err(error) = session.select(row, col, true)
+                && let Err(error) = session.select_mode(
+                    row,
+                    col,
+                    true,
+                    opterm::selection::SelectionMode::gesture(1, modifiers.alt),
+                )
             {
                 self.error = Some(format!("{error:#}"));
             }
@@ -1617,7 +2181,8 @@ impl App {
         {
             let (row, col) = point(pos);
             if session.controlled()
-                && let Err(error) = session.select(row, col, false)
+                && let Err(error) =
+                    session.select_mode(row, col, false, opterm::selection::SelectionMode::Simple)
             {
                 self.error = Some(format!("{error:#}"));
             }
@@ -1627,26 +2192,103 @@ impl App {
             && let Some(pos) = response.interact_pointer_pos()
         {
             let (row, col) = point(pos);
-            if session.controlled() {
-                let result = if ctx.input(|i| i.modifiers.is_none())
-                    && !response.double_clicked()
-                    && !response.triple_clicked()
-                {
+            let link = link_gesture
+                .then(|| {
+                    opterm::links::link_at(
+                        &screen,
+                        row,
+                        col,
+                        screen.cwd.as_deref().map(std::path::Path::new),
+                    )
+                })
+                .flatten();
+            if let Some(link) = link {
+                if let Err(error) = open::that_detached(&link.target) {
+                    self.error = Some(format!("Open link: {error:#}"));
+                }
+                self.ui_input_consumed = true;
+            } else if session.controlled() {
+                let clicks = if response.triple_clicked() {
+                    3
+                } else if response.double_clicked() {
+                    2
+                } else {
+                    1
+                };
+                let result = if modifiers.is_none() && clicks == 1 {
                     self.click_edit = Some((id, row, col));
                     Ok(())
                 } else {
-                    session.select(row, col, true)
+                    session.select_mode(
+                        row,
+                        col,
+                        true,
+                        opterm::selection::SelectionMode::gesture(clicks, modifiers.alt),
+                    )
                 };
                 if let Err(error) = result {
                     self.error = Some(format!("{error:#}"));
                 }
             }
         }
-        if local_selection && response.drag_stopped() && self.settings.current.copy_on_select {
+        if local_selection
+            && (response.drag_stopped() || response.double_clicked() || response.triple_clicked())
+            && self.settings.current.copy_on_select
+        {
             self.pending_copy = Some((id, Instant::now()));
             ctx.request_repaint_after(Duration::from_millis(100));
         }
-        let screen = session.screen();
+        let context_id = egui::Id::new(("terminal-link-menu", id));
+        if local_selection && response.secondary_clicked() {
+            ctx.data_mut(|data| data.insert_temp(context_id, hovered_link.clone()));
+        }
+        if local_selection || response.context_menu_opened() {
+            let context_link = ctx
+                .data(|data| data.get_temp::<Option<opterm::links::Link>>(context_id))
+                .flatten();
+            response.context_menu(|ui| {
+                if let Some(link) = &context_link {
+                    if ui.button("Open link").clicked() {
+                        if let Err(error) = open::that_detached(&link.target) {
+                            self.error = Some(format!("Open link: {error:#}"));
+                        }
+                        ui.close();
+                    }
+                    if ui.button("Copy link").clicked() {
+                        ctx.copy_text(link.target.clone());
+                        ui.close();
+                    }
+                    ui.separator();
+                }
+                let selected = session.selected_text();
+                if ui
+                    .add_enabled(selected.is_some(), egui::Button::new("Copy selection"))
+                    .clicked()
+                {
+                    if let Some(text) = selected {
+                        ctx.copy_text(text);
+                    }
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(session.controlled(), egui::Button::new("Paste"))
+                    .clicked()
+                {
+                    if let Some(tab) = self.tabs.get_mut(self.active) {
+                        tab.focused = id;
+                    }
+                    self.paste_requested = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                    ui.close();
+                }
+                ui.weak("Double-click: word · triple-click: line · Alt-drag: block");
+                ui.weak(if cfg!(target_os = "macos") {
+                    "Cmd-click opens links"
+                } else {
+                    "Ctrl-click opens links"
+                });
+            });
+        }
         let caret = session
             .info()
             .and_then(|info| info.profile)
@@ -1666,7 +2308,8 @@ impl App {
             *activity = (screen.cursor, Instant::now());
         }
         let blink_phase = activity.1.elapsed().as_millis() % 1000;
-        let caret_visible = !caret.blink || blink_phase < 500 || self.ime.text(id).is_some();
+        let caret_visible =
+            copy_mode.is_some() || !caret.blink || blink_phase < 500 || self.ime.text(id).is_some();
         if caret.blink
             && focused
             && ctx.input(|i| i.focused)
@@ -1680,45 +2323,149 @@ impl App {
             screen.background[1],
             screen.background[2],
         );
-        let cursor_color = Color32::from_rgb(
-            screen.cursor_color[0],
-            screen.cursor_color[1],
-            screen.cursor_color[2],
+        let readability = &self.settings.current.readability;
+        let visible_cursor = copy_mode.map(|mode| mode.cursor()).or(screen.cursor);
+        let cursor_background = visible_cursor
+            .and_then(|(row, col)| {
+                screen.cells.iter().find(|cell| {
+                    cell.row == row
+                        && col >= cell.col
+                        && col < cell.col + if cell.wide { 2 } else { 1 }
+                })
+            })
+            .map_or(screen.background, |cell| cell.bg);
+        let cursor_rgb = opterm::readability::cursor_color(
+            screen.cursor_color,
+            cursor_background,
+            readability.automatic_cursor_contrast,
         );
+        let cursor_color = Color32::from_rgb(cursor_rgb[0], cursor_rgb[1], cursor_rgb[2]);
         if let Some(error) = &screen.error {
             self.error = Some(error.clone());
         }
+        let title = format!(
+            "{} · {}",
+            screen.title,
+            if session.controlled() {
+                "controlled"
+            } else {
+                "observed"
+            }
+        );
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, &title));
+        if let Some(mode) = copy_mode {
+            let mut accessible_screen = (*screen).clone();
+            accessible_screen.cursor = Some(mode.cursor());
+            for cell in &mut accessible_screen.cells {
+                cell.selected = mode.contains(cell.row, cell.col);
+            }
+            opterm::accessibility::expose(
+                ui,
+                &response,
+                &accessible_screen,
+                &title,
+                focused,
+                Vec2::new(width, height),
+                true,
+            );
+        } else {
+            opterm::accessibility::expose(
+                ui,
+                &response,
+                &screen,
+                &title,
+                focused,
+                Vec2::new(width, height),
+                false,
+            );
+        }
         let painter = ui.painter().with_clip_rect(rect);
+        if focused
+            && readability.cursor_line_guide
+            && let Some((row, _)) = visible_cursor
+        {
+            let guide = Rect::from_min_size(
+                rect.min + Vec2::new(0.0, row as f32 * height),
+                Vec2::new(rect.width(), height),
+            );
+            painter.rect_filled(
+                guide,
+                0,
+                Color32::from_rgba_unmultiplied(cursor_rgb[0], cursor_rgb[1], cursor_rgb[2], 18),
+            );
+        }
+        let mut contrast_cache = BTreeMap::new();
         for cell in &screen.cells {
             let position = rect.min + Vec2::new(cell.col as f32 * width, cell.row as f32 * height);
             let cell_rect = Rect::from_min_size(
                 position,
                 Vec2::new(width * if cell.wide { 2.0 } else { 1.0 }, height),
             );
-            let cell_bg = if cell.selected {
+            let mut cell_bg = if copy_mode
+                .map_or(cell.selected, |mode| mode.contains(cell.row, cell.col))
+                || cell.search_current
+            {
                 Color32::from_rgb(
                     screen.selection_color[0],
                     screen.selection_color[1],
                     screen.selection_color[2],
                 )
+            } else if cell.search_match {
+                Color32::from_rgb(88, 69, 28)
             } else {
                 Color32::from_rgb(cell.bg[0], cell.bg[1], cell.bg[2])
             };
+            let dim = if focused {
+                0.0
+            } else {
+                readability.inactive_pane_dim
+            };
+            let dimmed = opterm::readability::dim(
+                [cell_bg.r(), cell_bg.g(), cell_bg.b()],
+                screen.background,
+                dim,
+            );
+            cell_bg = Color32::from_rgb(dimmed[0], dimmed[1], dimmed[2]);
             if cell_bg != bg {
                 painter.rect_filled(cell_rect, 0, cell_bg);
             }
-            let fg = Color32::from_rgb(cell.fg[0], cell.fg[1], cell.fg[2]);
+            let foreground = opterm::readability::dim(cell.fg, screen.background, dim);
+            let fg_rgb = if readability.minimum_contrast <= 1.0 {
+                foreground
+            } else if contrast_cache.len() < 4096 {
+                *contrast_cache
+                    .entry((foreground, dimmed))
+                    .or_insert_with(|| {
+                        opterm::readability::ensure_contrast(
+                            foreground,
+                            dimmed,
+                            readability.minimum_contrast,
+                        )
+                    })
+            } else {
+                opterm::readability::ensure_contrast(
+                    foreground,
+                    dimmed,
+                    readability.minimum_contrast,
+                )
+            };
+            let fg = Color32::from_rgb(fg_rgb[0], fg_rgb[1], fg_rgb[2]);
             if cell.text != " " {
                 painter.text(position, Align2::LEFT_TOP, &cell.text, font.clone(), fg);
             }
-            if cell.underline {
+            if cell.underline
+                || cell.hyperlink.is_some()
+                || (link_gesture
+                    && hovered_link.is_some()
+                    && hover_point == Some((cell.row, cell.col)))
+            {
                 painter.line_segment(
                     [cell_rect.left_bottom(), cell_rect.right_bottom()],
                     (1.0, fg),
                 );
             }
         }
-        if let Some((row, col)) = screen.cursor
+        if let Some((row, col)) = visible_cursor
             && focused
             && ctx.input(|i| i.focused)
             && !screen.exited
@@ -1726,7 +2473,9 @@ impl App {
             let pos = rect.min + Vec2::new(col as f32 * width, row as f32 * height);
             let cursor_rect = Rect::from_min_size(pos, Vec2::new(width, height));
             if session.controlled()
+                && copy_mode.is_none()
                 && self.search.is_none()
+                && self.switcher.is_none()
                 && self.settings_dialog.is_none()
                 && self.rename.is_none()
                 && self.end_session.is_none()
@@ -1800,6 +2549,16 @@ impl App {
                 }
             }
         }
+        if self
+            .find_cursor
+            .is_some_and(|(pane, since)| pane == id && since.elapsed() < Duration::from_secs(2))
+            && let Some((row, col)) = visible_cursor
+        {
+            let center =
+                rect.min + Vec2::new((col as f32 + 0.5) * width, (row as f32 + 0.5) * height);
+            painter.circle_stroke(center, 28.0, (3.0, Color32::from_rgb(80, 180, 255)));
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
         if screen.exited {
             painter.text(
                 rect.right_bottom(),
@@ -1821,21 +2580,68 @@ impl App {
     }
 
     fn open_search(&mut self) {
+        self.copy_mode = None;
         if let Some(session) = self.focused_session() {
-            self.search = Some(Search {
-                session: session.id,
-                query: String::new(),
-                status: "Literal, case-sensitive search".into(),
-                token: 0,
-            });
+            self.search = Some(Search::new(session.id));
+        }
+    }
+    fn open_copy_mode(&mut self) {
+        if self.copy_mode.take().is_some() {
+            return;
+        }
+        self.close_search();
+        if let Some(session) = self.focused_session() {
+            self.copy_mode = Some((
+                session.id,
+                opterm::copy_mode::CopyMode::new(session.screen()),
+            ));
+        }
+        self.ui_input_consumed = true;
+    }
+    fn prompt(&mut self, backwards: bool) {
+        if let Some(client) = &self.client
+            && let Some(session) = self.focused_session()
+        {
+            if !client.shell_integration_supported {
+                self.error = Some("This running service predates shell integration. Existing sessions remain running.".into());
+            } else if let Err(error) = client.prompt(session.id, backwards) {
+                self.error = Some(format!("Prompt navigation: {error:#}"));
+            }
+        }
+    }
+    fn copy_last_output(&mut self) {
+        if let Some(client) = &self.client
+            && let Some(session) = self.focused_session()
+        {
+            let id = session.id;
+            if !client.shell_integration_supported {
+                self.error = Some("This running service predates shell integration. Existing sessions remain running.".into());
+                return;
+            }
+            self.output_token += 1;
+            if let Err(error) = client.copy_last_output(id, self.output_token) {
+                self.error = Some(format!("Copy last command output: {error:#}"));
+            }
         }
     }
     fn close_search(&mut self) {
         if let Some(search) = self.search.take()
             && let Some(client) = &self.client
+            && client.session(search.session).controlled()
         {
             self.search_token += 1;
-            let _ = client.search(search.session, "", false, true, self.search_token);
+            if client.advanced_search_supported {
+                let _ = client.search_advanced(
+                    search.session,
+                    "",
+                    search.options,
+                    false,
+                    true,
+                    self.search_token,
+                );
+            } else {
+                let _ = client.search(search.session, "", false, true, self.search_token);
+            }
         }
     }
     fn find(&mut self, backwards: bool, reset: bool) {
@@ -1843,97 +2649,76 @@ impl App {
             && let Some(client) = &self.client
         {
             self.search_token += 1;
-            search.token = self.search_token;
-            match client.search(
-                search.session,
-                &search.query,
-                backwards,
-                reset,
-                search.token,
-            ) {
-                Ok(()) => {
-                    search.status = if search.query.is_empty() {
-                        String::new()
-                    } else {
-                        "Searching…".into()
-                    }
-                }
-                Err(error) => search.status = error.to_string(),
+            if search.scope == find_ui::Scope::All
+                && client.advanced_search_supported
+                && client.session(search.session).controlled()
+            {
+                let _ = client.search_advanced(
+                    search.session,
+                    "",
+                    search.options,
+                    false,
+                    true,
+                    self.search_token,
+                );
+                self.search_token += 1;
             }
+            search.send(client, self.search_token, backwards, reset);
         }
     }
     fn search_bar(&mut self, ctx: &egui::Context) {
-        if let Some(client) = &self.client {
-            for result in client.take_search_results() {
-                if let Some(search) = &mut self.search
-                    && result.id == search.session
-                    && result.token == search.token
-                {
-                    search.status = match result.result {
-                        Ok(true) => "Match".into(),
-                        Ok(false) => "No match".into(),
-                        Err(error) => error,
-                    };
-                }
-            }
-        }
+        let Some(client) = self.client.clone() else {
+            return;
+        };
         let Some(search) = &mut self.search else {
             return;
         };
-        let mut command = None;
-        let (enter, shift, escape) = ctx.input(|input| {
-            let enter = input.events.iter().find_map(|event| match event {
-                egui::Event::Key {
-                    key: Key::Enter,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } if !modifiers.ctrl && !modifiers.alt && !modifiers.mac_cmd => {
-                    Some(modifiers.shift)
-                }
-                _ => None,
-            });
-            (
-                enter.is_some(),
-                enter.unwrap_or(false),
-                input.key_pressed(Key::Escape),
-            )
+        let ready = search.pending_session.is_some_and(|id| {
+            self.panes.contains_key(&id)
+                && self
+                    .tabs
+                    .get(self.active)
+                    .is_some_and(|tab| tab.focused == id)
         });
-        let mut close = escape;
-        egui::TopBottomPanel::top("find")
-            .exact_height(32.0)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Find");
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut search.query)
-                            .desired_width(230.0)
-                            .char_limit(1024),
-                    );
-                    if search.token == 0 || enter {
-                        response.request_focus();
-                    }
-                    if response.changed() {
-                        command = Some((false, true));
-                    }
-                    if ui.button("Next").clicked() || (enter && !shift) {
-                        command = Some((false, false));
-                    }
-                    if ui.button("Previous").clicked() || (enter && shift) {
-                        command = Some((true, false));
-                    }
-                    if ui.button("×").clicked() || ctx.input(|i| i.key_pressed(Key::Escape)) {
-                        close = true;
-                    }
-                    ui.label(&search.status);
-                });
-            });
-        if let Some((backwards, reset)) = command {
-            self.find(backwards, reset);
+        if ready {
+            search.pending_session = None;
+            self.find(false, true);
         }
-        if close {
-            self.close_search();
-            self.ui_input_consumed = true;
+        let action = self
+            .search
+            .as_mut()
+            .and_then(|search| search.show(ctx, &client));
+        match action {
+            Some(find_ui::Action::Find { backwards, reset }) => self.find(backwards, reset),
+            Some(find_ui::Action::Close) => {
+                self.close_search();
+                self.ui_input_consumed = true;
+            }
+            Some(find_ui::Action::Activate(id)) => {
+                let mut search = self.search.take().unwrap();
+                if client.session(search.session).controlled() && client.advanced_search_supported {
+                    self.search_token += 1;
+                    let _ = client.search_advanced(
+                        search.session,
+                        "",
+                        search.options,
+                        false,
+                        true,
+                        self.search_token,
+                    );
+                }
+                self.select_session(SessionRef {
+                    instance: client.instance.clone(),
+                    id,
+                });
+                search.session = id;
+                search.scope = find_ui::Scope::Focused;
+                search.pending_session = Some(id);
+                search.status = "Opening matching session…".into();
+                self.search = Some(search);
+                self.ui_input_consumed = true;
+            }
+            None => {}
         }
     }
 
@@ -2200,6 +2985,17 @@ impl App {
             }
             Shortcut::Settings => self.open_settings(),
             Shortcut::Search => self.open_search(),
+            Shortcut::CopyMode => self.open_copy_mode(),
+            Shortcut::PreviousPrompt => self.prompt(true),
+            Shortcut::NextPrompt => self.prompt(false),
+            Shortcut::CopyLastOutput => self.copy_last_output(),
+            Shortcut::FindCursor => {
+                if let Some(session) = self.focused_session() {
+                    self.find_cursor = Some((session.id, Instant::now()));
+                }
+            }
+            Shortcut::QuickSwitch => self.open_switcher(),
+            Shortcut::UndoClose => self.undo_close(),
             Shortcut::SplitRight => self.split(Axis::Right),
             Shortcut::SplitBelow => self.split(Axis::Below),
             Shortcut::Maximize => self.maximize(),
@@ -2277,6 +3073,61 @@ impl App {
     }
 
     fn events(&mut self, ctx: &egui::Context) {
+        if self.copy_mode.is_some() {
+            let events = ctx.input(|input| input.events.clone());
+            let mut exit = false;
+            let mut changed = false;
+            for event in events {
+                let key = match event {
+                    egui::Event::Copy => Some((Key::Enter, egui::Modifiers::NONE)),
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } => Some((key, modifiers)),
+                    _ => None,
+                };
+                if let Some((key, modifiers)) = key {
+                    changed = true;
+                    if let Some(action) = self.settings.current.shortcuts.action(key, modifiers)
+                        && matches!(
+                            action,
+                            Shortcut::QuickSwitch
+                                | Shortcut::Search
+                                | Shortcut::Settings
+                                | Shortcut::CopyMode
+                                | Shortcut::FindCursor
+                        )
+                    {
+                        self.shortcut(action, ctx);
+                        break;
+                    }
+                    let mode = &mut self.copy_mode.as_mut().unwrap().1;
+                    match mode.handle_key(key, modifiers) {
+                        opterm::copy_mode::Outcome::Continue => {}
+                        opterm::copy_mode::Outcome::Exit => {
+                            exit = true;
+                            break;
+                        }
+                        opterm::copy_mode::Outcome::Copy(text) => {
+                            ctx.copy_text(text);
+                            exit = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if exit {
+                self.copy_mode = None;
+                self.ui_input_consumed = true;
+            }
+            self.ime.clear_other_session(None);
+            if changed {
+                ctx.request_repaint();
+            }
+            return;
+        }
         let mut click_edit = self.click_edit.take();
         let focus = self
             .focused_session()
@@ -2285,7 +3136,9 @@ impl App {
         self.ime.clear_other_session(
             if ctx.input(|i| i.focused)
                 && self.search.is_none()
+                && self.switcher.is_none()
                 && self.settings_dialog.is_none()
+                && self.switcher.is_none()
                 && self.rename.is_none()
                 && self.error.is_none()
                 && self.end_session.is_none()
@@ -2295,10 +3148,17 @@ impl App {
                 None
             },
         );
-        if self.ui_input_consumed || self.dragged_tab.is_some() {
+        if self.ui_input_consumed || self.dragged_tab.is_some() || self.switcher.is_some() {
             return;
         }
         if self.search.is_some() {
+            let quick_switch = ctx.input(|input| input.events.iter().any(|event| matches!(event,
+                egui::Event::Key { key, pressed: true, modifiers, .. }
+                if self.settings.current.shortcuts.action(*key, *modifiers) == Some(Shortcut::QuickSwitch))));
+            if quick_switch {
+                self.open_switcher();
+                return;
+            }
             if ctx.input(|i| i.key_pressed(Key::Escape)) {
                 self.close_search();
             }
@@ -2312,6 +3172,7 @@ impl App {
             return;
         }
         if self.rename.is_some()
+            || self.settings_dialog.is_some()
             || self.end_session.is_some()
             || self.error.is_some()
             || egui::Popup::is_any_open(ctx)
@@ -2374,6 +3235,9 @@ impl App {
                     && !(key == Key::V && action == Shortcut::Paste)
                 {
                     self.shortcut(action, ctx);
+                    if self.switcher.is_some() {
+                        break;
+                    }
                     continue;
                 }
             }
@@ -2386,6 +3250,9 @@ impl App {
                 && let Some(action) = self.settings.current.shortcuts.action(*key, *modifiers)
             {
                 self.shortcut(action, ctx);
+                if self.switcher.is_some() {
+                    break;
+                }
                 shortcut_text = true;
                 continue;
             }
@@ -2650,14 +3517,77 @@ impl eframe::App for App {
             self.pending_copy = None;
         }
         ctx.request_repaint_after(Duration::from_secs(1));
+        if let Some(client) = &self.client {
+            for result in client.take_output_results() {
+                if result.token == self.output_token {
+                    match result.result {
+                        Ok(text) => {
+                            ctx.copy_text(text);
+                            self.session_notice = Some("Last command output copied.".into());
+                        }
+                        Err(error) => {
+                            self.error = Some(format!("Copy last command output: {error}"))
+                        }
+                    }
+                }
+            }
+        }
         self.ui_input_consumed = false;
         self.sync_tabs();
+        if self.copy_mode.as_ref().is_some_and(|(id, _)| {
+            self.tabs
+                .get(self.active)
+                .is_none_or(|tab| tab.focused != *id)
+                || !self.panes.contains_key(id)
+        }) {
+            self.copy_mode = None;
+        }
         self.poll_transfers(ctx);
         let tab_rects = self.tab_bar(ctx);
+        if self.search.is_none()
+            && self.switcher.is_none()
+            && self.settings_dialog.is_none()
+            && self.rename.is_none()
+            && self.error.is_none()
+            && self.end_session.is_none()
+        {
+            let accessible_focus = self.tabs.get(self.active).and_then(|tab| {
+                tab.layout.ids().into_iter().find(|id| {
+                    ctx.input(|input| {
+                        input.has_accesskit_action_request(
+                            egui::Id::new(("pane", *id)),
+                            egui::accesskit::Action::Focus,
+                        )
+                    })
+                })
+            });
+            if let Some(id) = accessible_focus
+                && let Some(tab) = self.tabs.get_mut(self.active)
+            {
+                tab.focused = id;
+            }
+        }
         self.search_bar(ctx);
+        if self.copy_mode.is_some() {
+            egui::TopBottomPanel::top("copy-mode").show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Copy mode · frozen view");
+                    if self.copy_mode.as_ref().is_some_and(|(_, mode)| mode.truncated) { ui.weak("Bounded snapshot"); }
+                    ui.weak("Arrows / hjkl: move · Ctrl/Alt + arrows: word · Shift: select · V: mark · Enter: copy · Esc: return");
+                    if ui.button("Copy and return").clicked() {
+                        if let Some((_, mut mode)) = self.copy_mode.take()
+                            && let opterm::copy_mode::Outcome::Copy(text) = mode.handle_key(Key::Enter, egui::Modifiers::NONE) { ctx.copy_text(text); }
+                        self.ui_input_consumed = true;
+                    }
+                    if ui.button("Return").clicked() { self.copy_mode = None; self.ui_input_consumed = true; }
+                });
+            });
+        }
         self.terminal(ctx);
         self.tab_drag(ctx, &tab_rects);
+        self.show_switcher(ctx);
         self.events(ctx);
+        self.remember_focus();
         self.show_settings(ctx);
         if let Some(index) = self.rename {
             egui::Window::new("Rename tab")
