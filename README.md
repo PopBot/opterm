@@ -6,6 +6,47 @@ A lightweight cross-platform terminal for macOS, Linux, and Windows, with built-
 
 The Rust prototype runs a real local shell in the approved thin layout, with tabs, splits, multiple windows, resize, selection, copy/paste, and scrollback. A small background service now keeps shells and terminal programs alive when you close or crash the desktop. Reopening Opterm reconnects to those live sessions. Saved windows restore tabs, splits, names, sizes, and focus by reconnecting to existing work. Settings include appearance, launch profiles, per-profile terminal themes, TOML configuration, and a last-valid recovery backup. No database is involved. See [prototype status and limitations](docs/prototype-status.md).
 
+## Screenshots
+
+These are actual captures of the running Linux X11 prototype, not design mockups. They were taken on an isolated display without a window manager, so native title bars are absent. They illustrate the implemented terminal, layouts, and settings; they do not establish macOS/Windows coverage or performance claims.
+
+### Terminal
+
+![Opterm running a real shell with colored terminal output](docs/screenshots/prototype-linux.png)
+
+### Split panes
+
+![Opterm with independent shells in horizontal and vertical splits](docs/screenshots/prototype-splits-linux.png)
+
+<details>
+<summary>Appearance settings, profiles, themes, Light mode, and restored windows</summary>
+
+### Appearance settings
+
+![Opterm's separate compact appearance settings window](docs/screenshots/prototype-settings-linux.png)
+
+### Launch profiles
+
+![Opterm launch profile editor with executable, starting folder, and theme](docs/screenshots/prototype-profiles-linux.png)
+
+### Terminal themes
+
+![Opterm terminal theme editor](docs/screenshots/prototype-themes-linux.png)
+
+### Light terminal theme
+
+![A running Opterm terminal using the Light profile theme](docs/screenshots/prototype-light-linux.png)
+
+### Restored windows
+
+![Opterm windows restored with existing terminal sessions](docs/screenshots/prototype-layouts-linux.png)
+
+</details>
+
+## Operating guide
+
+Read the [user guide](docs/user-guide.md) for everyday operation: opening tabs and splits, running agents, keeping sessions alive, profiles/themes, shortcuts, settings recovery, saved layouts, and troubleshooting. Check [delivery progress](docs/delivery-progress.md) for features still being completed and validated.
+
 ## Run locally
 
 ```sh
@@ -48,6 +89,8 @@ In **Settings → Profiles**, create shell/agent presets with executable, argume
 
 In **Settings → Shortcuts & clipboard**, edit action bindings, explicitly unbind conflicting actions, or reset platform defaults. Save applies bindings immediately and preserves the settings backup. Copy-on-select is optional and initially off. F1–F20 and standard modified keys reach terminal programs. Mouse-aware programs receive clicks, dragging and wheel input; hold Shift to select or scroll locally. Native paste preserves text and line breaks without adding Enter.
 
+Press Cmd+F (macOS) or Ctrl+Shift+F (Linux/Windows) for compact literal scrollback search. Enter finds the next match; Shift+Enter finds the previous one; Escape closes the row. Drag tabs to reorder them. Right-click a tab to move its entire split layout to another window, or drag it outside the window to create one. Transfers preserve running processes and manual names; a failed or timed-out handoff keeps the source tab.
+
 Windows save their own tabs, splits, names, size, and focus. Reopening restores their arrangement and reconnects surviving sessions. Unavailable work remains visible without command replay or replacement shells. Toggle restoration under **Settings → Sessions & history**, or use `--no-restore` for one fresh launch. See [saved layouts and recovery behavior](docs/saved-layouts.md).
 
 The service stays running when all windows close. Rebuilding the app leaves an existing service running its current code to preserve work. Older services remain usable but may lack profile/theme support or the identity required for safe saved-layout reattachment until deliberately upgraded after work finishes. After finishing its sessions, deliberately stop it to load the rebuilt service on the next launch. To deliberately stop it and end **all** its sessions:
@@ -60,6 +103,11 @@ Use an installed Rust toolchain and a native desktop session. The first build do
 
 ## Project documents
 
+- [User guide: how to operate Opterm](docs/user-guide.md)
+- [Settings files and last-valid recovery](docs/settings-foundation.md)
+- [Launch profiles and terminal themes](docs/profiles-themes.md)
+- [Saved windows, tabs, and splits](docs/saved-layouts.md)
+- [Ordered delivery progress](docs/delivery-progress.md)
 - [Product brief](docs/product-brief.md)
 - [UI, settings, and first-version specification](docs/ui-settings-spec.md)
 - [Terminal-first prototype plan](docs/prototype-plan.md)

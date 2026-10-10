@@ -7,6 +7,7 @@ use opterm::{
     layout::{Axis, Layout},
     layouts::{self, Node, SavedTab, SessionRef},
     shortcuts::Action as Shortcut,
+    transfers,
 };
 
 use eframe::egui::{self, Align2, Color32, FontId, Key, Pos2, Rect, Sense, Vec2};
@@ -67,6 +68,19 @@ enum Placement {
 struct Missing {
     session: SessionRef,
     title: String,
+}
+
+enum Startup {
+    Existing,
+    Fresh,
+    Receive(String),
+}
+
+struct Search {
+    session: u64,
+    query: String,
+    status: String,
+    token: u64,
 }
 
 fn restore_node(
@@ -133,6 +147,18 @@ struct App {
     layout_poll: Instant,
     mouse_button: Option<(u64, u8, Rect)>,
     pending_copy: Option<(u64, Instant)>,
+    search: Option<Search>,
+    search_token: u64,
+    dragged_tab: Option<u64>,
+    outgoing: Option<(u64, transfers::Pending)>,
+    incoming: Vec<transfers::Offer>,
+    transfer_poll: Instant,
+    executable: std::path::PathBuf,
+    next_local: u64,
+    leaving: Vec<u64>,
+    ui_input_consumed: bool,
+    destinations: Vec<layouts::Window>,
+    window_poll: Instant,
 }
 
 fn install_font(ctx: &egui::Context, database: &fontdb::Database, family: &str) -> bool {
@@ -179,7 +205,7 @@ impl App {
         settings: Store,
         saved_layout: Option<layouts::Store>,
         restored: bool,
-        fresh: bool,
+        startup: Startup,
         notice: Option<String>,
     ) -> anyhow::Result<Self> {
         let restored_window = if restored {
@@ -228,6 +254,18 @@ impl App {
             layout_poll: Instant::now(),
             mouse_button: None,
             pending_copy: None,
+            search: None,
+            search_token: 0,
+            dragged_tab: None,
+            outgoing: None,
+            incoming: Vec::new(),
+            transfer_poll: Instant::now(),
+            executable: std::env::current_exe()?,
+            next_local: u64::MAX - 10000,
+            leaving: Vec::new(),
+            ui_input_consumed: false,
+            destinations: Vec::new(),
+            window_poll: Instant::now(),
             settings_dialog: None,
             settings_poll: Instant::now(),
             settings,
@@ -252,7 +290,7 @@ impl App {
             }
             let reconnect = if let Some(window) = &restored_window {
                 Reconnect::Saved(window.sessions())
-            } else if fresh {
+            } else if !matches!(startup, Startup::Existing) {
                 Reconnect::Fresh
             } else {
                 Reconnect::Detached
@@ -262,7 +300,7 @@ impl App {
                 launch,
                 !app.program.is_empty(),
                 reconnect,
-                restored_window.is_none(),
+                restored_window.is_none() && !matches!(startup, Startup::Receive(_)),
                 move || notify.request_repaint(),
             )
         }) {
@@ -284,6 +322,26 @@ impl App {
             app.restore_tabs(window);
         }
         app.sync_tabs();
+        if let Startup::Receive(id) = startup {
+            let result = service::state_dir().and_then(|state| {
+                let receiver = app
+                    .saved_layout
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("A saved-window file is required for tab movement")
+                    })?
+                    .window
+                    .id
+                    .clone();
+                let offer = transfers::receive(&state, &id, &receiver)?;
+                app.begin_receive(offer)
+            });
+            if let Err(error) = result {
+                app.error = Some(format!(
+                    "Receive tab: {error:#}. The source tab stays available."
+                ));
+            }
+        }
         Ok(app)
     }
 
@@ -486,7 +544,9 @@ impl App {
         let Some(client) = &self.client else {
             return;
         };
-        let (views, created) = client.view_updates();
+        let (mut views, created) = client.view_updates();
+        self.leaving.retain(|id| views.contains(id));
+        views.retain(|id| !self.leaving.contains(id));
         let retained: Vec<u64> = views
             .iter()
             .copied()
@@ -572,6 +632,10 @@ impl App {
         );
     }
     fn create_with_profile(&mut self, placement: Placement, profile: &str) {
+        if matches!(placement, Placement::Split {tab,..} if self.outgoing.as_ref().is_some_and(|(key,_)| *key == tab))
+        {
+            return;
+        }
         if let Some(client) = &self.client {
             let request = self.settings.current.launch(profile).and_then(|launch| {
                 if client.profiles { Ok(Request::CreateProfile(Box::new(launch))) }
@@ -623,13 +687,13 @@ impl App {
         }
     }
     fn new_window(&mut self) {
-        let result = std::env::current_exe().and_then(|exe| {
-            Command::new(exe)
+        let result = {
+            Command::new(&self.executable)
                 .arg("--new-window")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .spawn()
-        });
+        };
         match result {
             Ok(mut child) => {
                 std::thread::spawn(move || {
@@ -640,6 +704,13 @@ impl App {
         }
     }
     fn detach(&mut self) {
+        if self.outgoing.as_ref().is_some_and(|(key, _)| {
+            self.tabs
+                .get(self.active)
+                .is_some_and(|tab| tab.key == *key)
+        }) {
+            return;
+        }
         if let Some(tab) = self.tabs.get(self.active)
             && self.missing.remove(&tab.focused).is_some()
         {
@@ -668,6 +739,13 @@ impl App {
         }
     }
     fn detach_tab(&mut self) {
+        if self.outgoing.as_ref().is_some_and(|(key, _)| {
+            self.tabs
+                .get(self.active)
+                .is_some_and(|tab| tab.key == *key)
+        }) {
+            return;
+        }
         if let Some(tab) = self.tabs.get(self.active)
             && let Some(client) = &self.client
         {
@@ -684,11 +762,25 @@ impl App {
         }
     }
     fn maximize(&mut self) {
+        if self.outgoing.as_ref().is_some_and(|(key, _)| {
+            self.tabs
+                .get(self.active)
+                .is_some_and(|tab| tab.key == *key)
+        }) {
+            return;
+        }
         if let Some(tab) = self.tabs.get_mut(self.active) {
             tab.maximized = !tab.maximized;
         }
     }
     fn navigate(&mut self, key: Key, resize: bool) {
+        if self.outgoing.as_ref().is_some_and(|(moving, _)| {
+            self.tabs
+                .get(self.active)
+                .is_some_and(|tab| tab.key == *moving)
+        }) {
+            return;
+        }
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
@@ -748,6 +840,14 @@ impl App {
     }
 
     fn tab_bar(&mut self, ctx: &egui::Context) {
+        let destinations = self.destinations.clone();
+        let own = self
+            .saved_layout
+            .as_ref()
+            .map(|store| store.window.id.clone())
+            .unwrap_or_default();
+        let mut move_request = None;
+        let mut tab_rects = Vec::new();
         egui::TopBottomPanel::top("tabs")
             .exact_height(30.0)
             .frame(
@@ -772,8 +872,15 @@ impl App {
                                 } else {
                                     &automatic_title
                                 });
-                        let title: String =
+                        let mut title: String =
                             title.chars().filter(|c| !c.is_control()).take(30).collect();
+                        if self
+                            .outgoing
+                            .as_ref()
+                            .is_some_and(|(key, _)| *key == tab.key)
+                        {
+                            title.push_str(" · moving");
+                        }
                         let response = ui.add(
                             egui::Button::new(title)
                                 .fill(if index == self.active {
@@ -785,12 +892,54 @@ impl App {
                                 } else {
                                     Color32::TRANSPARENT
                                 })
-                                .corner_radius(4),
+                                .corner_radius(4)
+                                .sense(Sense::click_and_drag()),
                         );
+                        tab_rects.push((tab.key, response.rect));
+                        if response.drag_started() && self.outgoing.is_none() {
+                            self.dragged_tab = Some(tab.key);
+                        }
                         if response.clicked() {
                             self.active = index;
+                            self.search = None;
                         }
-                        if response.double_clicked() {
+                        response.context_menu(|ui| {
+                            if ui
+                                .add_enabled(
+                                    self.outgoing.is_none(),
+                                    egui::Button::new("Move to new window"),
+                                )
+                                .clicked()
+                            {
+                                move_request = Some((tab.key, None));
+                                ui.close();
+                            }
+                            for window in destinations.iter().filter(|window| window.id != own) {
+                                let name = window
+                                    .tabs
+                                    .get(window.active)
+                                    .and_then(|tab| tab.name.clone())
+                                    .unwrap_or_else(|| {
+                                        format!("Window {}", &window.id[window.id.len() - 6..])
+                                    });
+                                if ui
+                                    .add_enabled(
+                                        self.outgoing.is_none(),
+                                        egui::Button::new(format!("Move to {name}")),
+                                    )
+                                    .clicked()
+                                {
+                                    move_request = Some((tab.key, Some(window.id.clone())));
+                                    ui.close();
+                                }
+                            }
+                        });
+                        if response.double_clicked()
+                            && self
+                                .outgoing
+                                .as_ref()
+                                .is_none_or(|(key, _)| *key != tab.key)
+                        {
                             self.rename = Some(index);
                             self.rename_text = tab.name.clone().unwrap_or_default();
                         }
@@ -884,7 +1033,15 @@ impl App {
                                 self.maximize();
                                 ui.close();
                             }
-                            if ui.button("Rename tab…").clicked() {
+                            if ui
+                                .add_enabled(
+                                    self.outgoing.as_ref().is_none_or(|(key, _)| {
+                                        self.tabs.get(self.active).is_none_or(|tab| tab.key != *key)
+                                    }),
+                                    egui::Button::new("Rename tab…"),
+                                )
+                                .clicked()
+                            {
                                 self.rename = Some(self.active);
                                 self.rename_text = self
                                     .tabs
@@ -933,6 +1090,53 @@ impl App {
                     });
                 });
             });
+        if let Some(key) = self.dragged_tab
+            && ctx.input(|input| input.pointer.any_released())
+        {
+            self.dragged_tab = None;
+            if let Some(pos) =
+                ctx.input(|input| input.pointer.interact_pos().or(input.pointer.latest_pos()))
+            {
+                if let Some((target, _)) = tab_rects.iter().find(|(_, rect)| rect.contains(pos)) {
+                    if let (Some(source), Some(target)) = (
+                        self.tabs.iter().position(|tab| tab.key == key),
+                        self.tabs.iter().position(|tab| tab.key == *target),
+                    ) {
+                        let active = self.tabs.get(self.active).map(|tab| tab.key);
+                        let tab = self.tabs.remove(source);
+                        self.tabs.insert(target, tab);
+                        self.active = active
+                            .and_then(|key| self.tabs.iter().position(|tab| tab.key == key))
+                            .unwrap_or(0);
+                        if let Err(error) = self.save_layout(ctx) {
+                            self.error = Some(error.to_string());
+                        }
+                    }
+                } else if !ctx.viewport_rect().contains(pos) {
+                    let origin = ctx
+                        .input(|input| input.viewport().inner_rect.map(|rect| rect.min))
+                        .unwrap_or(Pos2::ZERO);
+                    let world = origin + pos.to_vec2();
+                    let target = destinations
+                        .iter()
+                        .filter(|window| window.id != own)
+                        .find(|window| {
+                            window.position.is_some_and(|position| {
+                                Rect::from_min_size(
+                                    Pos2::new(position[0], position[1]),
+                                    Vec2::new(window.size[0], window.size[1]),
+                                )
+                                .contains(world)
+                            })
+                        })
+                        .map(|window| window.id.clone());
+                    move_request = Some((key, target));
+                }
+            }
+        }
+        if let Some((key, target)) = move_request {
+            self.move_tab(key, target, ctx);
+        }
     }
 
     fn terminal(&mut self, ctx: &egui::Context) {
@@ -952,6 +1156,7 @@ impl App {
                     );
                     return;
                 };
+                if self.outgoing.as_ref().is_some_and(|(key,_)| *key == tab.key) { ui.disable(); }
                 if tab.maximized {
                     self.pane_rects.push((tab.focused, rect));
                 } else {
@@ -1159,6 +1364,374 @@ impl App {
         }
     }
 
+    fn open_search(&mut self) {
+        if let Some(session) = self.focused_session() {
+            self.search = Some(Search {
+                session: session.id,
+                query: String::new(),
+                status: "Literal, case-sensitive search".into(),
+                token: 0,
+            });
+        }
+    }
+    fn close_search(&mut self) {
+        if let Some(search) = self.search.take()
+            && let Some(client) = &self.client
+        {
+            self.search_token += 1;
+            let _ = client.search(search.session, "", false, true, self.search_token);
+        }
+    }
+    fn find(&mut self, backwards: bool, reset: bool) {
+        if let Some(search) = &mut self.search
+            && let Some(client) = &self.client
+        {
+            self.search_token += 1;
+            search.token = self.search_token;
+            match client.search(
+                search.session,
+                &search.query,
+                backwards,
+                reset,
+                search.token,
+            ) {
+                Ok(()) => {
+                    search.status = if search.query.is_empty() {
+                        String::new()
+                    } else {
+                        "Searching…".into()
+                    }
+                }
+                Err(error) => search.status = error.to_string(),
+            }
+        }
+    }
+    fn search_bar(&mut self, ctx: &egui::Context) {
+        if let Some(client) = &self.client {
+            for result in client.take_search_results() {
+                if let Some(search) = &mut self.search
+                    && result.id == search.session
+                    && result.token == search.token
+                {
+                    search.status = match result.result {
+                        Ok(true) => "Match".into(),
+                        Ok(false) => "No match".into(),
+                        Err(error) => error,
+                    };
+                }
+            }
+        }
+        let Some(search) = &mut self.search else {
+            return;
+        };
+        let mut command = None;
+        let (enter, shift, escape) = ctx.input(|input| {
+            let enter = input.events.iter().find_map(|event| match event {
+                egui::Event::Key {
+                    key: Key::Enter,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if !modifiers.ctrl && !modifiers.alt && !modifiers.mac_cmd => {
+                    Some(modifiers.shift)
+                }
+                _ => None,
+            });
+            (
+                enter.is_some(),
+                enter.unwrap_or(false),
+                input.key_pressed(Key::Escape),
+            )
+        });
+        let mut close = escape;
+        egui::TopBottomPanel::top("find")
+            .exact_height(32.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Find");
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut search.query)
+                            .desired_width(230.0)
+                            .char_limit(1024),
+                    );
+                    if search.token == 0 || enter {
+                        response.request_focus();
+                    }
+                    if response.changed() {
+                        command = Some((false, true));
+                    }
+                    if ui.button("Next").clicked() || (enter && !shift) {
+                        command = Some((false, false));
+                    }
+                    if ui.button("Previous").clicked() || (enter && shift) {
+                        command = Some((true, false));
+                    }
+                    if ui.button("×").clicked() || ctx.input(|i| i.key_pressed(Key::Escape)) {
+                        close = true;
+                    }
+                    ui.label(&search.status);
+                });
+            });
+        if let Some((backwards, reset)) = command {
+            self.find(backwards, reset);
+        }
+        if close {
+            self.close_search();
+            self.ui_input_consumed = true;
+        }
+    }
+
+    fn saved_tab(&self, tab: &Tab) -> SavedTab {
+        SavedTab {
+            name: tab.name.clone(),
+            focused: tab
+                .layout
+                .ids()
+                .iter()
+                .position(|id| *id == tab.focused)
+                .unwrap_or(0),
+            maximized: tab.maximized,
+            layout: self.capture_node(
+                &tab.layout,
+                self.client
+                    .as_ref()
+                    .map(|client| client.instance.as_str())
+                    .unwrap_or_default(),
+            ),
+        }
+    }
+    fn move_tab(&mut self, key: u64, target: Option<String>, ctx: &egui::Context) {
+        if self.outgoing.is_some() {
+            return;
+        }
+        let result = (|| -> anyhow::Result<transfers::Pending> {
+            let source = &self
+                .saved_layout
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Saved layouts are required for tab movement"))?
+                .window
+                .id;
+            anyhow::ensure!(
+                self.client
+                    .as_ref()
+                    .is_some_and(|client| !client.instance.is_empty()),
+                "Finish work before upgrading the old service to enable tab movement"
+            );
+            let tab = self
+                .tabs
+                .iter()
+                .find(|tab| tab.key == key)
+                .ok_or_else(|| anyhow::anyhow!("Tab is no longer available"))?;
+            let pending = transfers::Offer::send(
+                &service::state_dir()?,
+                source,
+                target.as_deref(),
+                self.saved_tab(tab),
+            )?;
+            if target.is_none() {
+                let mut child = Command::new(&self.executable)
+                    .args(["--receive-tab", pending.id()])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .spawn()?;
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Ok(pending)
+        })();
+        match result {
+            Ok(pending) => {
+                self.outgoing = Some((key, pending));
+                self.close_search();
+                ctx.request_repaint();
+            }
+            Err(error) => {
+                self.error = Some(format!(
+                    "Move tab: {error:#}. The source tab stays available."
+                ))
+            }
+        }
+    }
+    fn begin_receive(&mut self, offer: transfers::Offer) -> anyhow::Result<()> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Session service is unavailable"))?;
+        let ids: Vec<_> = client.infos().iter().map(|info| info.id).collect();
+        let references = offer.tab.layout.sessions();
+        let reserved: Vec<_> = self
+            .tabs
+            .iter()
+            .flat_map(|tab| self.saved_tab(tab).layout.sessions())
+            .chain(
+                self.incoming
+                    .iter()
+                    .flat_map(|offer| offer.tab.layout.sessions()),
+            )
+            .collect();
+        anyhow::ensure!(
+            !references
+                .iter()
+                .any(|reference| reserved.contains(reference)),
+            "This window already displays or is receiving a session from the tab"
+        );
+        let mut attached = Vec::new();
+        for reference in references {
+            if reference.matches(&client.instance, &ids) {
+                if let Err(error) = client.send(Request::Attach(reference.id)) {
+                    for id in attached {
+                        self.leaving.push(id);
+                        let _ = client.send(Request::Detach(id));
+                    }
+                    return Err(error);
+                }
+                attached.push(reference.id);
+            }
+        }
+        self.incoming.push(offer);
+        Ok(())
+    }
+    fn poll_transfers(&mut self, ctx: &egui::Context) {
+        if self.transfer_poll.elapsed() < Duration::from_millis(100) {
+            ctx.request_repaint_after(Duration::from_millis(100));
+            return;
+        }
+        self.transfer_poll = Instant::now();
+        let result = (|| -> anyhow::Result<()> {
+            let state = service::state_dir()?;
+            if self.window_poll.elapsed() >= Duration::from_secs(1) {
+                self.window_poll = Instant::now();
+                self.destinations = transfers::live_windows(&state)?;
+            }
+            let Some(receiver) = self
+                .saved_layout
+                .as_ref()
+                .map(|store| store.window.id.clone())
+            else {
+                return Ok(());
+            };
+            if let Some((key, pending)) = &mut self.outgoing {
+                match pending.poll()? {
+                    transfers::Status::Pending => {}
+                    transfers::Status::Accepted { .. } => {
+                        let key = *key;
+                        if let Some(index) = self.tabs.iter().position(|tab| tab.key == key) {
+                            let active_key = self.tabs.get(self.active).map(|tab| tab.key);
+                            let tab = self.tabs.remove(index);
+                            if let Some(client) = &self.client {
+                                for id in tab.layout.ids() {
+                                    if self.panes.contains_key(&id) {
+                                        self.leaving.push(id);
+                                        client.send(Request::Detach(id))?;
+                                    } else {
+                                        self.missing.remove(&id);
+                                    }
+                                }
+                            }
+                            self.active = active_key
+                                .and_then(|key| self.tabs.iter().position(|tab| tab.key == key))
+                                .unwrap_or_else(|| {
+                                    self.active.min(self.tabs.len().saturating_sub(1))
+                                });
+                        }
+                        self.outgoing = None;
+                        self.save_layout(ctx)?;
+                    }
+                    transfers::Status::Expired => {
+                        self.outgoing = None;
+                        anyhow::bail!(
+                            "The receiving window did not accept the tab. Its original view is still available."
+                        );
+                    }
+                }
+            }
+            for offer in transfers::incoming(&state, &receiver)? {
+                if !self.incoming.iter().any(|pending| pending.id == offer.id) {
+                    self.begin_receive(offer)?;
+                }
+            }
+            let Some(client) = self.client.clone() else {
+                return Ok(());
+            };
+            let ids: Vec<_> = client.infos().iter().map(|info| info.id).collect();
+            let mut ready = Vec::new();
+            for offer in &self.incoming {
+                let live: Vec<_> = offer
+                    .tab
+                    .layout
+                    .sessions()
+                    .into_iter()
+                    .filter(|reference| reference.matches(&client.instance, &ids))
+                    .map(|reference| reference.id)
+                    .collect();
+                if live.iter().all(|id| self.panes.contains_key(id)) {
+                    ready.push(offer.id.clone());
+                }
+            }
+            for id in ready {
+                let index = self
+                    .incoming
+                    .iter()
+                    .position(|offer| offer.id == id)
+                    .unwrap();
+                let offer = self.incoming.remove(index);
+                let live: Vec<_> = offer
+                    .tab
+                    .layout
+                    .sessions()
+                    .into_iter()
+                    .filter(|reference| reference.matches(&client.instance, &ids))
+                    .map(|reference| reference.id)
+                    .collect();
+                // The automatic tabs created by attachment become one transferred split tab.
+                self.tabs
+                    .retain(|tab| !tab.layout.ids().iter().any(|pane| live.contains(pane)));
+                let layout = restore_node(
+                    &offer.tab.layout,
+                    &client.instance,
+                    &ids,
+                    &mut self.missing,
+                    &mut self.next_local,
+                );
+                let panes = layout.ids();
+                let key = panes[0];
+                self.tabs.push(Tab {
+                    key,
+                    focused: panes[offer.tab.focused],
+                    layout,
+                    name: offer.tab.name.clone(),
+                    maximized: offer.tab.maximized,
+                });
+                self.active = self.tabs.len() - 1;
+                let accepted = self
+                    .save_layout(ctx)
+                    .and_then(|()| offer.acknowledge(&state, &receiver));
+                if let Err(error) = accepted {
+                    if let Some(tab) = self.tabs.pop() {
+                        for id in tab.layout.ids() {
+                            self.missing.remove(&id);
+                        }
+                    }
+                    for id in live {
+                        self.leaving.push(id);
+                        client.send(Request::Detach(id))?;
+                    }
+                    self.active = self.active.min(self.tabs.len().saturating_sub(1));
+                    self.save_layout(ctx)?;
+                    return Err(error);
+                }
+                for id in live {
+                    client.send(Request::TakeControl(id))?;
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.error = Some(format!("Tab transfer: {error:#}"));
+        }
+    }
+
     fn shortcut(&mut self, action: Shortcut, ctx: &egui::Context) {
         match action {
             Shortcut::NewTab => self.new_tab(),
@@ -1170,6 +1743,7 @@ impl App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
             }
             Shortcut::Settings => self.open_settings(),
+            Shortcut::Search => self.open_search(),
             Shortcut::SplitRight => self.split(Axis::Right),
             Shortcut::SplitBelow => self.split(Axis::Below),
             Shortcut::Maximize => self.maximize(),
@@ -1231,6 +1805,14 @@ impl App {
         let width =
             ctx.fonts_mut(|fonts| fonts.glyph_width(&FontId::monospace(appearance.font_size), 'M'));
         let height = appearance.font_size * appearance.line_height;
+        let rect = rect.shrink2(Vec2::new(
+            appearance
+                .padding_x
+                .min((rect.width() - 1.0).max(0.0) / 2.0),
+            appearance
+                .padding_y
+                .min((rect.height() - 1.0).max(0.0) / 2.0),
+        ));
         let row = (((pos.y - rect.top()).max(0.0) / height) as usize)
             .min(((rect.height() / height) as usize).saturating_sub(1));
         let col = (((pos.x - rect.left()).max(0.0) / width) as usize)
@@ -1239,6 +1821,22 @@ impl App {
     }
 
     fn events(&mut self, ctx: &egui::Context) {
+        if self.ui_input_consumed {
+            return;
+        }
+        if self.search.is_some() {
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                self.close_search();
+            }
+            return;
+        }
+        if self.outgoing.as_ref().is_some_and(|(key, _)| {
+            self.tabs
+                .get(self.active)
+                .is_some_and(|tab| tab.key == *key)
+        }) {
+            return;
+        }
         if self.rename.is_some()
             || self.end_session.is_some()
             || self.error.is_some()
@@ -1539,8 +2137,11 @@ impl eframe::App for App {
             self.pending_copy = None;
         }
         ctx.request_repaint_after(Duration::from_secs(1));
+        self.ui_input_consumed = false;
         self.sync_tabs();
+        self.poll_transfers(ctx);
         self.tab_bar(ctx);
+        self.search_bar(ctx);
         self.terminal(ctx);
         self.events(ctx);
         self.show_settings(ctx);
@@ -1639,6 +2240,16 @@ fn main() {
         println!("Session service stopped; its sessions were ended.");
         return;
     }
+    let receive = if program.first().is_some_and(|arg| arg == "--receive-tab") {
+        program.remove(0);
+        if program.is_empty() {
+            eprintln!("Missing tab transfer ID");
+            std::process::exit(1);
+        }
+        Some(program.remove(0))
+    } else {
+        None
+    };
     let mut fresh = program
         .first()
         .is_some_and(|s| s == "--new-window" || s == "--no-restore");
@@ -1658,7 +2269,7 @@ fn main() {
     if program.first().is_some_and(|s| s == "--") {
         program.remove(0);
     }
-    fresh |= !program.is_empty();
+    fresh |= !program.is_empty() || receive.is_some();
     let settings = match Paths::discover() {
         Ok(paths) => Store::load(paths),
         Err(error) => {
@@ -1727,7 +2338,11 @@ fn main() {
                 settings,
                 saved_layout,
                 restored,
-                fresh || !restore,
+                match receive {
+                    Some(id) => Startup::Receive(id),
+                    None if fresh || !restore => Startup::Fresh,
+                    None => Startup::Existing,
+                },
                 notice,
             )?))
         }),

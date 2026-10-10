@@ -90,6 +90,13 @@ pub enum Request {
         col: usize,
         start: bool,
     },
+    Search {
+        id: u64,
+        query: String,
+        backwards: bool,
+        reset: bool,
+        token: u64,
+    },
     Shutdown,
 }
 #[derive(Serialize, Deserialize)]
@@ -100,6 +107,8 @@ pub enum Reply {
         #[serde(default)]
         profiles: bool,
         #[serde(default)]
+        search: bool,
+        #[serde(default)]
         instance: String,
     },
     List(Vec<Info>),
@@ -107,6 +116,11 @@ pub enum Reply {
     Unchanged,
     Done,
     Error(String),
+    Search {
+        id: u64,
+        token: u64,
+        found: bool,
+    },
 }
 
 fn write_frame<T: Serialize>(stream: &mut impl Write, value: &T) -> Result<()> {
@@ -185,6 +199,7 @@ fn endpoint(path: &Path) -> Result<Name<'static>> {
 pub struct Connection {
     stream: LocalSocketStream,
     pub profiles: bool,
+    pub search_supported: bool,
     pub instance: String,
 }
 impl Connection {
@@ -193,16 +208,19 @@ impl Connection {
         let mut connection = Self {
             stream: LocalSocketStream::connect(endpoint(&path)?)?,
             profiles: false,
+            search_supported: false,
             instance: String::new(),
         };
         match connection.call(Request::Hello(VERSION))? {
             Reply::Hello {
                 version: VERSION,
                 profiles,
+                search,
                 instance,
                 ..
             } => {
                 connection.profiles = profiles;
+                connection.search_supported = search;
                 connection.instance = instance;
                 Ok(connection)
             }
@@ -363,6 +381,7 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
                 version: VERSION,
                 pid: std::process::id(),
                 profiles: true,
+                search: true,
                 instance: hub.instance.clone(),
             });
         }
@@ -417,7 +436,8 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
         | Request::Paste { id, .. }
         | Request::Resize { id, .. }
         | Request::Scroll { id, .. }
-        | Request::Select { id, .. } => *id,
+        | Request::Select { id, .. }
+        | Request::Search { id, .. } => *id,
         _ => unreachable!(),
     };
     let managed = hub
@@ -490,6 +510,17 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
         Request::Scroll { lines, .. } => {
             managed.require_control(client)?;
             managed.session.scroll(lines);
+        }
+        Request::Search {
+            id,
+            query,
+            backwards,
+            reset,
+            token,
+        } => {
+            managed.require_control(client)?;
+            let found = managed.session.search(&query, backwards, reset)?;
+            return Ok(Reply::Search { id, token, found });
         }
         Request::Select {
             row, col, start, ..
@@ -568,6 +599,7 @@ pub fn serve(path: &Path) -> Result<()> {
                     version: VERSION,
                     pid: std::process::id(),
                     profiles: true,
+                    search: true,
                     instance,
                 },
             )

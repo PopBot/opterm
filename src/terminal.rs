@@ -13,9 +13,9 @@ use crate::profiles::{Launch, Theme};
 use alacritty_terminal::{
     event::{Event, EventListener, WindowSize},
     grid::{Dimensions, Scroll},
-    index::{Column, Point, Side},
+    index::{Boundary, Column, Direction, Point, Side},
     selection::{Selection, SelectionType},
-    term::{Config, Osc52, Term, TermMode, cell::Flags, viewport_to_point},
+    term::{Config, Osc52, Term, TermMode, cell::Flags, search::RegexSearch, viewport_to_point},
     vte::ansi::{Color, Processor, Rgb},
 };
 use anyhow::{Context, Result};
@@ -470,6 +470,72 @@ impl Session {
         }
         self.generation.fetch_add(1, Ordering::Relaxed);
         (self.wake)();
+    }
+
+    /// Search only the terminal's bounded live grid; no transcript or index is built.
+    pub fn search(&self, query: &str, backwards: bool, reset: bool) -> Result<bool> {
+        anyhow::ensure!(query.len() <= 4096, "Search text exceeds 4096 bytes");
+        let mut term = self.terminal.lock().unwrap();
+        let found = if query.is_empty() {
+            term.selection = None;
+            false
+        } else {
+            // Explicit case sensitivity avoids the parser's smart-case default.
+            let mut literal = String::with_capacity(query.len() * 2 + 7);
+            literal.push_str("(?-i:");
+            for c in query.chars() {
+                if "\\.+*?()|[]{}^$".contains(c) {
+                    literal.push('\\');
+                }
+                literal.push(c);
+            }
+            literal.push(')');
+            let mut regex = RegexSearch::new(&literal)
+                .map_err(|error| anyhow::anyhow!("Build search: {error}"))?;
+            let direction = if backwards {
+                Direction::Left
+            } else {
+                Direction::Right
+            };
+            let selected = (!reset)
+                .then(|| {
+                    term.selection
+                        .as_ref()
+                        .and_then(|selection| selection.to_range(&term))
+                })
+                .flatten();
+            let origin = if let Some(selected) = selected {
+                if backwards {
+                    selected.start.sub(&*term, Boundary::None, 1)
+                } else {
+                    selected.end.add(&*term, Boundary::None, 1)
+                }
+            } else {
+                let row = if backwards {
+                    term.screen_lines() - 1
+                } else {
+                    0
+                };
+                let col = if backwards { term.columns() - 1 } else { 0 };
+                viewport_to_point(term.grid().display_offset(), Point::new(row, Column(col)))
+            };
+            let side = if backwards { Side::Right } else { Side::Left };
+            if let Some(found) = term.search_next(&mut regex, origin, direction, side, None) {
+                let mut selection =
+                    Selection::new(SelectionType::Simple, *found.start(), Side::Left);
+                selection.update(*found.end(), Side::Right);
+                term.selection = Some(selection);
+                term.scroll_to_point(*found.start());
+                true
+            } else {
+                term.selection = None;
+                false
+            }
+        };
+        drop(term);
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        (self.wake)();
+        Ok(found)
     }
 
     pub fn selected_text(&self) -> Option<String> {

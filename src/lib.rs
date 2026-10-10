@@ -5,3 +5,4 @@ pub mod service;
 pub mod settings;
 pub mod shortcuts;
 pub mod terminal;
+pub mod transfers;

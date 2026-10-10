@@ -37,6 +37,7 @@ X.XKeycodeToKeysym.argtypes = [D, C.c_uint, C.c_int]
 X.XKeycodeToKeysym.restype = W
 X.XSetInputFocus.argtypes = [D, W, C.c_int, W]
 X.XMapWindow.argtypes = [D, W]
+X.XRaiseWindow.argtypes = [D, W]
 X.XSync.argtypes = [D, C.c_int]
 X.XMoveWindow.argtypes = [D, W, C.c_int, C.c_int]
 X.XResizeWindow.argtypes = [D, W, C.c_uint, C.c_uint]
@@ -101,7 +102,9 @@ def main():
     app = None
     dpy = None
     env = None
-    binary = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else TARGET / 'debug/opterm'
+    controls_only = '--controls-only' in sys.argv
+    arguments = [arg for arg in sys.argv[1:] if arg != '--controls-only']
+    binary = Path(arguments[0]).resolve() if arguments else TARGET / 'debug/opterm'
     try:
         display = ':' + server.stdout.readline().decode().strip()
         env = {**os.environ, 'DISPLAY': display, 'LIBGL_ALWAYS_SOFTWARE': '1', 'WINIT_UNIX_BACKEND': 'x11', 'OPTERM_STATE_DIR': state.name + '/runtime', 'OPTERM_CONFIG_DIR': state.name + '/settings', 'OPTERM_RECOVERY_DIR': state.name + '/recovery'}
@@ -158,6 +161,181 @@ def main():
                 if shifted:
                     key(0xffe1, 0)
             X.XFlush(dpy)
+        def reopen():
+            process = subprocess.Popen([str(binary)], cwd=ROOT, env=env)
+            new_window = wait_until(find_window)
+            X.XMapWindow(dpy, new_window)
+            X.XSync(dpy, 0)
+            time.sleep(0.3)
+            X.XSetInputFocus(dpy, new_window, 1, 0)
+            X.XFlush(dpy)
+            time.sleep(0.5)
+            return process, new_window
+        def shortcut(symbol, alt=False):
+            key(0xffe3, 1); key(0xffe1, 1)
+            if alt: key(0xffe9, 1)
+            key(symbol, 1); key(symbol, 0)
+            if alt: key(0xffe9, 0)
+            key(0xffe1, 0); key(0xffe3, 0)
+            X.XFlush(dpy); time.sleep(0.35)
+        def click(x, y):
+            XT.XTestFakeMotionEvent(dpy, -1, x, y, 0)
+            XT.XTestFakeButtonEvent(dpy, 1, 1, 0)
+            XT.XTestFakeButtonEvent(dpy, 1, 0, 0)
+            X.XFlush(dpy); time.sleep(0.2)
+        def command_file(command, name):
+            path = Path(state.name) / name
+            path.unlink(missing_ok=True)
+            type_text(command + " > '" + str(path) + "'\n")
+            wait_until(lambda: path.exists() and path.stat().st_size > 0)
+            return path.read_text().strip()
+
+        def controls():
+            nonlocal app, window, env
+            # Everyday controls use their own service and settings so their tab
+            # transfers cannot change the continuity fixtures above.
+            for current in find_windows(): close_window(current)
+            wait_until(lambda: not find_windows())
+            app.wait(timeout=5)
+            continuity_env = env
+            env = {**env, 'OPTERM_STATE_DIR': state.name + '/controls/runtime',
+                   'OPTERM_CONFIG_DIR': state.name + '/controls/settings',
+                   'OPTERM_RECOVERY_DIR': state.name + '/controls/recovery'}
+            try:
+                app = subprocess.Popen([str(binary), '--', '/bin/sh'], cwd=ROOT, env=env)
+                window = wait_until(find_window)
+                X.XMoveWindow(dpy, window, 0, 0); X.XResizeWindow(dpy, window, 1000, 680)
+                X.XMapWindow(dpy, window); X.XSetInputFocus(dpy, window, 1, 0); X.XFlush(dpy)
+                time.sleep(0.5)
+                alpha_pid = command_file("export TAB=alpha; printf '%s' $$", 'controls-alpha')
+                shortcut(ord('t'))
+                beta_left_pid = command_file("export TAB=beta-left; printf '%s' $$", 'controls-beta-left')
+                shortcut(ord('e'))
+                beta_right_pid = command_file("export TAB=beta-right; printf '%s' $$", 'controls-beta-right')
+                shortcut(ord('t'))
+                gamma_pid = command_file("export TAB=gamma; printf '%s' $$", 'controls-gamma')
+                assert len({alpha_pid, beta_left_pid, beta_right_pid, gamma_pid}) == 4
+                close_window(window); assert app.wait(timeout=5) == 0
+                controls_layouts = Path(env['OPTERM_STATE_DIR']) / 'layouts'
+                source_path = next(controls_layouts.glob('*.json'))
+                source_doc = json.loads(source_path.read_text())
+                assert len(source_doc['tabs']) == 3
+                for tab, name in zip(source_doc['tabs'], ['Alpha', 'Beta', 'Gamma']):
+                    tab['name'] = name
+                source_doc['size'] = [1000, 680]; source_doc['position'] = [0, 0]
+                source_path.write_text(json.dumps(source_doc))
+                app, window = reopen()
+                assert command_file("printf '%s:%s' $$ \"$TAB\"", 'controls-restored-gamma') == gamma_pid + ':gamma'
+                # Phase-two interaction assertions are below; all checks use saved
+                # session references and actual shell PIDs rather than new launches.
+                search_ready = Path(state.name) / 'controls-search-ready'
+                type_text("printf '\\033[2J\\033[H'; python3 -c 'for i in range(180): print((\" \" * {3:0,60:10,150:20}[i] + (\"nee\" + \"dle.[*\")) if i in (3,60,150) else \"filler \" + str(i))'; printf READY > '" + str(search_ready) + "'\n")
+                wait_until(search_ready.exists)
+                def selection_left():
+                    data = subprocess.check_output(['xwd', '-display', display, '-root', '-silent'])
+                    h = struct.unpack('>25I', data[:100])
+                    pixel_bytes = h[11] // 8
+                    start = h[0] + h[19] * 12
+                    shifts = [(mask & -mask).bit_length() - 1 for mask in h[14:17]]
+                    found = []
+                    for y in range(65, 660, 3):
+                        for x in range(6, 340, 2):
+                            offset = start + y * h[12] + x * pixel_bytes
+                            pixel = int.from_bytes(data[offset:offset + pixel_bytes], 'little' if h[7] == 0 else 'big')
+                            if tuple((pixel >> shift) & 255 for shift in shifts) == (65, 83, 112):
+                                found.append(x)
+                    return min(found) if found else None
+                shortcut(ord('f'))
+                type_text('needle.[*')
+                first_match = wait_until(lambda: selection_left() is not None and selection_left())
+                key(0xff0d, 1); key(0xff0d, 0); X.XFlush(dpy)
+                next_match = wait_until(lambda: selection_left() is not None and selection_left() != first_match and selection_left())
+                assert next_match != first_match
+                key(0xffe1, 1); key(0xff0d, 1); key(0xff0d, 0); key(0xffe1, 0); X.XFlush(dpy)
+                wait_until(lambda: selection_left() == first_match)
+                key(0xffe3, 1); key(ord('a'), 1); key(ord('a'), 0); key(0xffe3, 0); X.XFlush(dpy)
+                type_text('needle.+')
+                wait_until(lambda: selection_left() is None)
+                key(0xff1b, 1); key(0xff1b, 0); X.XFlush(dpy); time.sleep(0.3)
+                assert command_file("printf '%s:%s' $$ \"$TAB\"", 'controls-after-search') == gamma_pid + ':gamma'
+                print('Compact literal scrollback search, Enter/Shift+Enter navigation, and Escape return to the same shell: passed')
+                def focus_window(current):
+                    X.XMoveWindow(dpy, current, 0, 0); X.XRaiseWindow(dpy, current)
+                    X.XSetInputFocus(dpy, current, 1, 0); X.XFlush(dpy); time.sleep(0.3)
+                def drag(x, y, target_x, target_y):
+                    XT.XTestFakeMotionEvent(dpy, -1, x, y, 0)
+                    XT.XTestFakeButtonEvent(dpy, 1, 1, 0); X.XFlush(dpy); time.sleep(0.15)
+                    XT.XTestFakeMotionEvent(dpy, -1, x + 12, y, 0); X.XFlush(dpy); time.sleep(0.15)
+                    XT.XTestFakeMotionEvent(dpy, -1, target_x, target_y, 0); X.XFlush(dpy); time.sleep(0.2)
+                    XT.XTestFakeButtonEvent(dpy, 1, 0, 0); X.XFlush(dpy); time.sleep(0.2)
+                def names(path):
+                    return [tab['name'] for tab in json.loads(path.read_text())['tabs']]
+                focus_window(window)
+                drag(135, 15, 20, 15)  # Gamma before Alpha.
+                wait_until(lambda: names(source_path) == ['Gamma', 'Alpha', 'Beta'])
+                reordered = json.loads(source_path.read_text())
+                assert reordered['tabs'][2] == source_doc['tabs'][1], 'Reordering changed the split tab'
+                assert command_file("printf '%s:%s' $$ \"$TAB\"", 'controls-reordered-gamma') == gamma_pid + ':gamma'
+                print('Tab drag reorders saved tabs while preserving active shell and split metadata: passed')
+                before = set(find_windows())
+                drag(145, 15, 1050, 100)  # Beta outside the source window.
+                receiving_window = wait_until(lambda: next(iter(set(find_windows()) - before), None))
+                wait_until(lambda: names(source_path) == ['Gamma', 'Alpha'])
+                receiver_path = wait_until(lambda: next((path for path in controls_layouts.glob('*.json') if path != source_path), None))
+                wait_until(lambda: names(receiver_path) == ['Beta'])
+                assert json.loads(receiver_path.read_text())['tabs'][0] == source_doc['tabs'][1]
+                focus_window(receiving_window)
+                assert command_file("printf '%s:%s' $$ \"$TAB\"", 'controls-moved-beta-right') == beta_right_pid + ':beta-right'
+                shortcut(0xff51)
+                assert command_file("printf '%s:%s' $$ \"$TAB\"", 'controls-moved-beta-left') == beta_left_pid + ':beta-left'
+                shortcut(0xff53)
+                # Move Alpha through the existing-window context-menu destination.
+                focus_window(window)
+                XT.XTestFakeMotionEvent(dpy, -1, 95, 15, 0)
+                XT.XTestFakeButtonEvent(dpy, 3, 1, 0); XT.XTestFakeButtonEvent(dpy, 3, 0, 0)
+                X.XFlush(dpy); time.sleep(0.25)
+                click(135, 45)  # Second item: Move to Beta.
+                wait_until(lambda: names(source_path) == ['Gamma'])
+                wait_until(lambda: names(receiver_path) == ['Beta', 'Alpha'])
+                received = json.loads(receiver_path.read_text())
+                assert received['tabs'][0] == source_doc['tabs'][1]
+                assert received['tabs'][1] == source_doc['tabs'][0]
+                focus_window(receiving_window)
+                assert command_file("printf '%s:%s' $$ \"$TAB\"", 'controls-moved-alpha') == alpha_pid + ':alpha'
+                # The source window still owns Gamma; transfers launch no replacement
+                # shell and do not rerun initialization commands in either split.
+                focus_window(window)
+                assert command_file("printf '%s:%s' $$ \"$TAB\"", 'controls-source-gamma') == gamma_pid + ':gamma'
+                with socket.socket(socket.AF_UNIX) as probe:
+                    probe.connect(str(Path(env['OPTERM_STATE_DIR']) / 'service.sock'))
+                    def call_controls(request):
+                        data = json.dumps(request).encode(); probe.sendall(struct.pack('<I', len(data)) + data)
+                        def receive(count):
+                            data = b''
+                            while len(data) < count:
+                                chunk = probe.recv(count - len(data)); assert chunk; data += chunk
+                            return data
+                        length = struct.unpack('<I', receive(4))[0]
+                        return json.loads(receive(length))
+                    call_controls({'Hello': 1})
+                    assert len(call_controls('List')['List']) == 4, 'Moving a tab launched replacement shells'
+                print('Drag to new window and move to existing window preserve names, splits, focus, original PIDs, and exactly four shells: passed')
+                print('Everyday controls screenshot:', screenshot(display, 'prototype-controls-linux.png'))
+            except Exception:
+                print('Controls failure screenshot:', screenshot(display, 'gui-controls-failure.png'))
+                raise
+            finally:
+                for current in find_windows(): close_window(current)
+                wait_until(lambda: not find_windows())
+                if app.poll() is None: app.wait(timeout=5)
+                subprocess.run([str(binary), '--stop-service'], cwd=ROOT, env=env,
+                               timeout=5, check=True, stdout=subprocess.DEVNULL)
+                env = continuity_env
+
+        if controls_only:
+            controls()
+            return
+
         # New tab using the accepted Linux binding.
         key(0xffe3, 1); key(0xffe1, 1); key(ord('t'), 1); key(ord('t'), 0); key(0xffe1, 0); key(0xffe3, 0)
         X.XFlush(dpy)
@@ -296,10 +474,6 @@ finally:
             X.XFlush(dpy)
             time.sleep(0.4)
             return settings
-        def click(x, y):
-            XT.XTestFakeMotionEvent(dpy, -1, x, y, 0)
-            XT.XTestFakeButtonEvent(dpy, 1, 1, 0); XT.XTestFakeButtonEvent(dpy, 1, 0, 0)
-            X.XFlush(dpy); time.sleep(0.15)
         def field(value):
             click(175, 118)
             key(0xffe3, 1); key(ord('a'), 1); key(ord('a'), 0); key(0xffe3, 0)
@@ -503,16 +677,6 @@ finally:
         close_window(window)
         assert app.wait(timeout=5) == 0, 'Normal close failed'
         wait_until(lambda: work_marker.exists() and work_marker.read_text() == 'ALIVE')
-        def reopen():
-            process = subprocess.Popen([str(binary)], cwd=ROOT, env=env)
-            new_window = wait_until(find_window)
-            X.XMapWindow(dpy, new_window)
-            X.XSync(dpy, 0)
-            time.sleep(0.3)
-            X.XSetInputFocus(dpy, new_window, 1, 0)
-            X.XFlush(dpy)
-            time.sleep(0.5)
-            return process, new_window
         app, window = reopen()
         type_text("printf '%s:%s' $$ \"$OPTERM_GUI\" > '" + str(restored_marker) + "'\n")
         wait_until(lambda: restored_marker.exists() and restored_marker.read_text() == original_pid + ':still-here')
@@ -528,24 +692,6 @@ finally:
         type_text("printf '%s:%s' $$ \"$OPTERM_GUI\" > '" + str(restored_marker) + "'\n")
         wait_until(lambda: restored_marker.exists() and restored_marker.read_text() == original_pid + ':still-here')
         print('Desktop SIGKILL/reopen: same shell PID, variables, and background work passed')
-        def shortcut(symbol, alt=False):
-            key(0xffe3, 1); key(0xffe1, 1)
-            if alt: key(0xffe9, 1)
-            key(symbol, 1); key(symbol, 0)
-            if alt: key(0xffe9, 0)
-            key(0xffe1, 0); key(0xffe3, 0)
-            X.XFlush(dpy); time.sleep(0.35)
-        def click(x, y):
-            XT.XTestFakeMotionEvent(dpy, -1, x, y, 0)
-            XT.XTestFakeButtonEvent(dpy, 1, 1, 0)
-            XT.XTestFakeButtonEvent(dpy, 1, 0, 0)
-            X.XFlush(dpy); time.sleep(0.2)
-        def command_file(command, name):
-            path = Path(state.name) / name
-            path.unlink(missing_ok=True)
-            type_text(command + " > '" + str(path) + "'\n")
-            wait_until(lambda: path.exists() and path.stat().st_size > 0)
-            return path.read_text().strip()
         left_pid = command_file("export PANE=left; printf '%s' $$", 'left-pid')
         left_size = command_file('stty size', 'left-size')
         shortcut(ord('e'))
@@ -691,6 +837,8 @@ finally:
             assert call('List') == {'List': []}, 'Restoration created replacement shells after service restart'
         print('Service restart restores unavailable panes without replaying commands: passed')
 
+        controls()
+
 
     except Exception:
         if dpy: print('Failure screenshot:', screenshot(display, 'gui-failure.png'))
@@ -706,7 +854,7 @@ finally:
                 app.kill(); app.wait()
         if env:
             subprocess.run([str(binary), '--stop-service'], cwd=ROOT, env=env, timeout=5, check=True, stdout=subprocess.DEVNULL)
-        if env:
+        if env and Path(env['OPTERM_RECOVERY_DIR']).exists():
             Path(env['OPTERM_RECOVERY_DIR']).chmod(0o700)
         state.cleanup()
         if dpy:

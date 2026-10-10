@@ -28,10 +28,17 @@ struct State {
     screens: BTreeMap<u64, Cached>,
     visible: Vec<u64>,
     created: VecDeque<Option<u64>>,
+    searched: VecDeque<SearchResult>,
     error: Option<String>,
     disconnected: bool,
 }
 impl State {
+    fn search_result(&mut self, result: SearchResult) {
+        if self.searched.len() == 128 {
+            self.searched.pop_front();
+        }
+        self.searched.push_back(result);
+    }
     fn snapshot(&mut self, snapshot: Snapshot) {
         let id = snapshot.info.id;
         self.infos.insert(id, snapshot.info);
@@ -58,11 +65,18 @@ pub enum Reconnect {
     Fresh,
 }
 
+pub struct SearchResult {
+    pub id: u64,
+    pub token: u64,
+    pub result: std::result::Result<bool, String>,
+}
+
 pub struct Client {
     sender: SyncSender<(Request, usize)>,
     state: Arc<Mutex<State>>,
     queued: Arc<AtomicUsize>,
     pub profiles: bool,
+    pub search_supported: bool,
     pub instance: String,
 }
 impl Client {
@@ -111,6 +125,10 @@ impl Client {
             })
             .map(|info| info.id)
             .collect();
+        // A fresh window still needs discovery metadata immediately. Waiting
+        // for the first periodic List can turn valid transfer references into
+        // unavailable panes before their attachments have been requested.
+        state.list(infos);
         for id in selected {
             match connection.call(Request::Attach(id)) {
                 Ok(Reply::Snapshot(snapshot)) => {
@@ -141,6 +159,7 @@ impl Client {
             }
         }
         let profiles = connection.profiles;
+        let search_supported = connection.search_supported;
         let instance = connection.instance.clone();
         state.visible = state.views.iter().copied().collect();
         let state = Arc::new(Mutex::new(state));
@@ -151,6 +170,7 @@ impl Client {
             state: state.clone(),
             queued: queued.clone(),
             profiles,
+            search_supported,
             instance,
         });
         thread::Builder::new().name("opterm-service-client".into()).spawn(move || {
@@ -168,7 +188,11 @@ impl Client {
                                 Ok(reply) => update(&mut state.lock().unwrap(), &request, reply),
                                 Err(error) => {
                                     { let mut state = state.lock().unwrap();
-                                    state.error = Some(format!("{error:#}"));
+                                    if let Request::Search { id, token, .. } = &request {
+                                        state.search_result(SearchResult { id: *id, token: *token, result: Err(format!("{error:#}")) });
+                                    } else {
+                                        state.error = Some(format!("{error:#}"));
+                                    }
                                     if matches!(request, Request::Create(_) | Request::CreateProfile(_)) { state.created.push_back(None); }
                                     }
                                     // List checks whether the connection remains alive.
@@ -224,6 +248,10 @@ impl Client {
 
     pub fn send(&self, request: Request) -> Result<()> {
         ensure!(
+            self.search_supported || !matches!(&request, Request::Search { .. }),
+            "Running service predates scrollback search. Existing sessions stay running."
+        );
+        ensure!(
             self.profiles || !matches!(&request, Request::CreateProfile(_) | Request::Themes(_)),
             "Running service predates profiles/themes. Existing work stays running; finish its sessions before deliberately stopping the service, or try an isolated OPTERM_STATE_DIR."
         );
@@ -237,6 +265,7 @@ impl Client {
             Request::Create(_) | Request::CreateProfile(_) | Request::Themes(_) => {
                 serde_json::to_vec(&request)?.len() + 128
             }
+            Request::Search { query, .. } => query.len() + 128,
             _ => 512,
         };
         ensure!(
@@ -253,6 +282,30 @@ impl Client {
             bail!("Terminal request was not queued: {error}");
         }
         Ok(())
+    }
+    pub fn search(
+        &self,
+        id: u64,
+        query: &str,
+        backwards: bool,
+        reset: bool,
+        token: u64,
+    ) -> Result<()> {
+        ensure!(
+            self.search_supported,
+            "Running service predates scrollback search. Existing sessions stay running; upgrade the service after its work finishes."
+        );
+        ensure!(query.len() <= 4096, "Search text exceeds 4096 bytes");
+        self.send(Request::Search {
+            id,
+            query: query.to_owned(),
+            backwards,
+            reset,
+            token,
+        })
+    }
+    pub fn take_search_results(&self) -> Vec<SearchResult> {
+        self.state.lock().unwrap().searched.drain(..).collect()
     }
     pub fn view_updates(&self) -> (Vec<u64>, Vec<Option<u64>>) {
         let mut state = self.state.lock().unwrap();
@@ -280,6 +333,14 @@ impl Client {
 }
 
 fn update(state: &mut State, request: &Request, reply: Reply) {
+    if let Reply::Search { id, token, found } = reply {
+        state.search_result(SearchResult {
+            id,
+            token,
+            result: Ok(found),
+        });
+        return;
+    }
     if let Reply::Snapshot(snapshot) = reply {
         let id = snapshot.info.id;
         state.snapshot(*snapshot);
