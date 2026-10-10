@@ -33,4 +33,4 @@ The current [UI/settings specification](ui-settings-spec.md) records the accepte
 
 ## Development workspace
 
-The canonical project is `/home/jarod/Dev/extdev/projects/optimized-terminal`, as selected by the user. The design documents and glossary have been moved into that RustRover project; the IDE connection is responding.
+The canonical project is `/home/jarod/Dev/extdev/projects/opterm`, as selected by the user. The repository, design documents, glossary, and RustRover project configuration are kept here. The directory was renamed from `optimized-terminal` on 2026-10-09 at the user's request.

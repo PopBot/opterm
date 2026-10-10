@@ -157,6 +157,7 @@ The [mockup files and generation prompts](design/mockups/README.md) record the a
 - macOS, Windows, and additional CPU/display results remain unverified until native runs are available. Cross-compilation alone cannot establish their input, accessibility, lifecycle, or measured-latency requirements.
 - Prototype evidence must preserve Q22's stable-release requirements even when a minimal evaluation view has incomplete feature coverage.
 - RustRover MCP responded successfully on 2026-10-09. The user selected `/home/jarod/Dev/extdev/projects/optimized-terminal` as the canonical project. All 14 documentation files, including `GLOSSARY.md` and the ten ADRs, were moved there from `opterm` and verified byte-for-byte before further edits; the existing IDE files were preserved.
+- Later on 2026-10-09, the user requested the directory name `opterm`. The repository was renamed to `/home/jarod/Dev/extdev/projects/opterm`, preserving Git history and project files. The previous reference-only `opterm` folder was preserved as `opterm-reference-backup-2026-10-09`; RustRover's module/root, recent-project, and trusted-path references were updated for the renamed project.
 
 ## Research references
 

@@ -9,7 +9,7 @@ The Rust prototype runs a real local shell in the approved thin layout, with tab
 ## Run locally
 
 ```sh
-cd /home/jarod/Dev/extdev/projects/optimized-terminal
+cd /home/jarod/Dev/extdev/projects/opterm
 cargo run --release
 ```
 
