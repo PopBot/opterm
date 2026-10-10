@@ -1,4 +1,5 @@
 //! Small, validated desktop preferences. Recovery never owns terminal processes.
+use crate::profiles::{DARK, LIGHT, Launch, Profile, SHELL, Theme};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -54,20 +55,28 @@ impl Default for Appearance {
 pub struct Settings {
     pub version: u32,
     pub appearance: Appearance,
+    pub default_profile: String,
+    pub workspace_directory: String,
+    pub profiles: Vec<Profile>,
+    pub themes: Vec<Theme>,
 }
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             appearance: Appearance::default(),
+            default_profile: SHELL.into(),
+            workspace_directory: String::new(),
+            profiles: Vec::new(),
+            themes: Vec::new(),
         }
     }
 }
 impl Settings {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == 1,
-            "Unsupported settings version {} (expected 1)",
+            self.version == 2,
+            "Unsupported settings version {} (expected 2)",
             self.version
         );
         let a = &self.appearance;
@@ -88,20 +97,135 @@ impl Settings {
                 "{name} must be between {min} and {max}"
             );
         }
+        crate::profiles::label(&self.default_profile, "Default profile ID")?;
+        crate::profiles::directory_syntax(&self.workspace_directory)?;
+        ensure!(
+            self.profiles.len() <= 64 && self.themes.len() <= 64,
+            "At most 64 custom profiles and themes"
+        );
+        let mut ids = std::collections::BTreeSet::new();
+        let mut names = std::collections::BTreeSet::from(["shell".to_owned()]);
+        for profile in &self.profiles {
+            profile.validate()?;
+            ensure!(
+                profile.id != SHELL && ids.insert(&profile.id),
+                "Duplicate or reserved profile ID"
+            );
+            ensure!(
+                names.insert(profile.name.to_lowercase()),
+                "Profile names must be unique"
+            );
+        }
+        ids.clear();
+        names.clear();
+        for theme in &self.themes {
+            theme.validate()?;
+            ensure!(
+                theme.id != DARK && theme.id != LIGHT && ids.insert(&theme.id),
+                "Duplicate or reserved theme ID"
+            );
+            ensure!(
+                !["dark", "light"].contains(&theme.name.to_lowercase().as_str())
+                    && names.insert(theme.name.to_lowercase()),
+                "Theme names must be unique (Dark and Light are reserved)"
+            );
+        }
         Ok(())
     }
+    pub fn profile(&self, id: &str) -> Option<Profile> {
+        if id == SHELL {
+            Some(Profile::default())
+        } else {
+            self.profiles.iter().find(|p| p.id == id).cloned()
+        }
+    }
+    pub fn default_profile(&self) -> Profile {
+        self.profile(&self.default_profile).unwrap_or_default()
+    }
+    pub fn all_profiles(&self) -> Vec<Profile> {
+        std::iter::once(Profile::default())
+            .chain(self.profiles.clone())
+            .collect()
+    }
+    pub fn theme(&self, id: &str) -> Theme {
+        match id {
+            DARK => Theme::dark(),
+            LIGHT => Theme::light(),
+            _ => self
+                .themes
+                .iter()
+                .find(|t| t.id == id)
+                .cloned()
+                .unwrap_or_else(Theme::dark),
+        }
+    }
+    pub fn all_themes(&self) -> Vec<Theme> {
+        [Theme::dark(), Theme::light()]
+            .into_iter()
+            .chain(self.themes.clone())
+            .collect()
+    }
+    pub fn launch(&self, id: &str) -> Result<Launch> {
+        let profile = self
+            .profile(id)
+            .context("Profile was removed; select another profile")?;
+        Ok(Launch {
+            theme: self.theme(&profile.theme),
+            profile,
+            workspace_directory: self.workspace_directory.clone(),
+        })
+    }
+    pub fn reference_notice(&self) -> Option<String> {
+        let mut notices = Vec::new();
+        if self.profile(&self.default_profile).is_none() {
+            notices.push(
+                "The default profile was removed; new sessions use the built-in Shell.".to_owned(),
+            );
+        }
+        for profile in &self.profiles {
+            if profile.theme != DARK
+                && profile.theme != LIGHT
+                && !self.themes.iter().any(|t| t.id == profile.theme)
+            {
+                notices.push(format!(
+                    "Theme for {} was removed; using Dark.",
+                    profile.name
+                ));
+            }
+        }
+        (!notices.is_empty()).then(|| notices.join(" "))
+    }
+    pub fn recovery_encode(&self) -> Result<Vec<u8>> {
+        let mut copy = self.clone();
+        for profile in &mut copy.profiles {
+            for env in &mut profile.environment {
+                if env.secret {
+                    env.value.clear();
+                }
+            }
+        }
+        copy.encode()
+    }
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        let settings: Self = toml::from_str(std::str::from_utf8(bytes)?)?;
+        let mut settings: Self = toml::from_str(std::str::from_utf8(bytes)?)?;
+        if settings.version == 1 {
+            settings.version = 2;
+        }
         settings.validate()?;
         Ok(settings)
     }
     pub fn encode(&self) -> Result<Vec<u8>> {
         self.validate()?;
-        Ok(format!(
+        let bytes = format!(
             "# Opterm desktop settings. Appearance changes do not restart sessions.\n{}",
             toml::to_string_pretty(self)?
         )
-        .into_bytes())
+        .into_bytes();
+        ensure!(
+            bytes.len() as u64 <= MAX_BYTES,
+            "Settings exceed 64 KiB; reduce profiles, arguments, or environment values"
+        );
+        Ok(bytes)
     }
 }
 #[derive(Clone, Debug)]
@@ -276,18 +400,18 @@ fn read_recovery(paths: &Paths) -> Result<Settings> {
     Settings::parse(&read_file(&paths.backup)?)
 }
 fn backup(paths: &Paths, bytes: &[u8]) -> Result<()> {
-    Settings::parse(bytes)?;
+    let recovery = Settings::parse(bytes)?.recovery_encode()?;
     let _lock = save_lock(paths)?;
     ensure!(
         revision(&paths.config) == Revision::Bytes(bytes.to_vec()),
         "Settings changed while updating recovery; retry"
     );
     // Avoid rewriting an unchanged recovery copy on each desktop launch.
-    if matches!(revision(&paths.backup), Revision::Bytes(ref existing) if existing == bytes && read_recovery(paths).is_ok())
+    if matches!(revision(&paths.backup), Revision::Bytes(ref existing) if existing == &recovery && read_recovery(paths).is_ok())
     {
         return Ok(());
     }
-    commit(prepare(&paths.backup, bytes)?, &paths.backup)
+    commit(prepare(&paths.backup, &recovery)?, &paths.backup)
 }
 
 pub struct Store {
@@ -309,6 +433,7 @@ impl Store {
             match Settings::parse(bytes) {
                 Ok(settings) => {
                     store.current = settings;
+                    store.notice = store.current.reference_notice();
                     if let Err(error) = backup(&store.paths, bytes) {
                         store.notice = Some(format!(
                             "Settings loaded, but recovery backup could not be updated at {}: {error:#}",
@@ -382,6 +507,9 @@ impl Store {
                 } else {
                     None
                 };
+                if self.notice.is_none() {
+                    self.notice = self.current.reference_notice();
+                }
                 true
             }
             Err(error) => {
@@ -403,7 +531,7 @@ impl Store {
             "Settings changed on disk. Reload the file or choose Replace file with my draft."
         );
         let config = prepare(&self.paths.config, &bytes).context("Prepare settings file")?;
-        let recovery = prepare(&self.paths.backup, &bytes)
+        let recovery = prepare(&self.paths.backup, &draft.recovery_encode()?)
             .context("Prepare recovery backup; settings were not saved")?;
         ensure!(
             replace || &self.disk_revision() == baseline,
@@ -420,7 +548,7 @@ impl Store {
             self.notice = Some(message.clone());
             bail!(message);
         }
-        self.notice = None;
+        self.notice = self.current.reference_notice();
         Ok(())
     }
 }

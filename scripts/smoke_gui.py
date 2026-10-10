@@ -13,6 +13,7 @@ import sys
 import time
 import tempfile
 import zlib
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / 'target'
@@ -299,8 +300,83 @@ def main():
         assert 'font_size = 14.0' in config.read_text()
         terminal_focus(); settings_window = open_settings()
         print('Settings screenshot:', screenshot(display, 'prototype-settings-linux.png'))
-        close_window(settings_window)
-        wait_until(lambda: not find_windows("Opterm Settings")); terminal_focus()
+        # Compact profile and theme editors, using real native controls.
+        def edit(x, y, value):
+            click(x, y)
+            key(0xffe3, 1); key(ord('a'), 1); key(ord('a'), 0); key(0xffe3, 0)
+            X.XFlush(dpy); time.sleep(0.1); type_text(str(value)); time.sleep(0.15)
+            type_text('\n'); time.sleep(0.15)
+        def app_shortcut(symbol):
+            key(0xffe3, 1); key(0xffe1, 1); key(symbol, 1); key(symbol, 0); key(0xffe1, 0); key(0xffe3, 0)
+            X.XFlush(dpy); time.sleep(0.4)
+        def profile_command(command, name):
+            path = Path(state.name) / name
+            path.unlink(missing_ok=True)
+            type_text(command + " > '" + str(path) + "'\n")
+            wait_until(lambda: path.exists() and path.stat().st_size > 0)
+            return path.read_text().strip()
+        def screen_pixel(x, y):
+            data = subprocess.check_output(['xwd', '-display', display, '-root', '-silent'])
+            h = struct.unpack('>25I', data[:100])
+            pixel_bytes = h[11] // 8
+            offset = h[0] + h[19] * 12 + y * h[12] + x * pixel_bytes
+            pixel = int.from_bytes(data[offset:offset + pixel_bytes], 'little' if h[7] == 0 else 'big')
+            return tuple((pixel >> ((mask & -mask).bit_length() - 1)) & 255 for mask in h[14:17])
+        profile_folder = Path(state.name) / 'profile folder'
+        profile_folder.mkdir()
+        click(285, 22); time.sleep(0.3)
+        click(230, 89); time.sleep(0.3)  # Add profile.
+        edit(230, 166, 'GUI shell'); edit(230, 193, '/bin/sh'); edit(230, 219, profile_folder)
+        click(160, 247); click(160, 297)  # Light theme.
+        click(65, 140)  # Use as default.
+        print('Profiles screenshot:', screenshot(display, 'prototype-profiles-linux.png'))
+        click(35, 520); wait_until(lambda: not find_windows('Opterm Settings'))
+        data = tomllib.loads(config.read_text())
+        assert data['profiles'][0]['name'] == 'GUI shell' and data['profiles'][0]['theme'] == 'light', data
+        assert data['default_profile'] == data['profiles'][0]['id']
+        assert backup.read_bytes() == config.read_bytes()
+        terminal_focus(); app_shortcut(ord('t'))
+        assert profile_command("printf '%s' \"$PWD\"", 'profile-cwd') == str(profile_folder)
+        light_pid = profile_command("printf '%s' $$", 'profile-light-pid')
+        wait_until(lambda: screen_pixel(2, 32) == (248, 248, 249))
+        print('Light terminal screenshot:', screenshot(display, 'prototype-light-linux.png'))
+        settings_window = open_settings(); click(285, 22); click(180, 62); time.sleep(0.3)
+        click(295, 89); time.sleep(0.3)  # Duplicate built-in Dark.
+        edit(170, 114, 'GUI Theme')
+        print('Themes screenshot:', screenshot(display, 'prototype-themes-linux.png'))
+        click(35, 520); wait_until(lambda: not find_windows('Opterm Settings'))
+        theme_id = tomllib.loads(config.read_text())['themes'][0]['id']
+        config.write_text(config.read_text().replace('theme = "light"', 'theme = "' + theme_id + '"'))
+        time.sleep(1.3); terminal_focus()
+        # Existing profile launches retain the selected theme; new tabs use the edited preset.
+        assert profile_command("printf '%s' $$", 'profile-light-retained') == light_pid
+        assert screen_pixel(2, 32) == (248, 248, 249)
+        app_shortcut(ord('t'))
+        custom_pid = profile_command("printf '%s' $$", 'profile-custom-pid')
+        assert custom_pid != light_pid
+        config.write_text(config.read_text().replace('#1f1f21', '#203040'))
+        wait_until(lambda: screen_pixel(2, 32) == (32, 48, 64))
+        assert profile_command("printf '%s' $$", 'profile-theme-kept-pid') == custom_pid
+        app_shortcut(ord('e'))  # Default-profile split captures the same folder/theme, with its own process.
+        split_pid = profile_command("printf '%s' $$", 'profile-split-pid')
+        assert split_pid not in (custom_pid, light_pid)
+        assert profile_command("printf '%s' \"$PWD\"", 'profile-split-cwd') == str(profile_folder)
+        settings_window = open_settings(); click(285, 22); click(180, 62); time.sleep(0.3)
+        click(150, 89); click(50, 160); time.sleep(0.3)  # Select custom theme.
+        click(365, 89); click(35, 520)  # Delete theme then Save.
+        wait_until(lambda: not find_windows('Opterm Settings'))
+        terminal_focus(); wait_until(lambda: screen_pixel(2, 32) == (31, 31, 33))
+        assert profile_command("printf '%s' $$", 'profile-after-theme-delete') == split_pid
+        settings_window = open_settings(); click(285, 22); time.sleep(0.2)
+        click(150, 89); click(50, 137); time.sleep(0.2)  # Select GUI shell profile.
+        click(365, 89); click(35, 520)  # Delete default profile, reverting to built-in Shell.
+        wait_until(lambda: not find_windows('Opterm Settings'))
+        terminal_focus()
+        assert tomllib.loads(config.read_text())['default_profile'] == 'shell'
+        assert profile_command("printf '%s' $$", 'profile-after-delete') == split_pid
+        app_shortcut(ord('t'))
+        assert profile_command("printf '%s' \"$PWD\"", 'profile-fallback-cwd') == str(Path.home())
+        print('Profile create/default/launch, Light/custom themes, live edits, default splits, and deletion without restarting work: passed')
         print('Settings Save/Cancel, live resize with same shell PID, external conflict/replace, corrupt file recovery, failed Save/retry: passed')
         # Keep a shell variable/PID and background work across actual window exit.
         pid_marker = Path(state.name) / 'pid'

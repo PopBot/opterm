@@ -90,3 +90,34 @@ fn existing_agent_clis_start_in_native_pty() {
         assert!(screen.error.is_none(), "{program}: {:?}", screen.error);
     }
 }
+
+#[test]
+fn profile_theme_queries_match_theme_and_program_overrides() {
+    use opterm::profiles::{Launch, Theme};
+    let mut launch = Launch::legacy(&[]);
+    launch.theme = Theme::light();
+    launch.profile.executable = "/bin/sh".into();
+    let reply = "\x1b]11;rgb:f8f8/f8f8/f9f9\x1b\\";
+    let script = format!(
+        r"stty raw -echo; printf '\033]11;?\033\\'; dd bs=1 count={} 2>/dev/null | od -An -tx1; printf '\033]11;rgb:01/02/03\007\033]11;?\033\\'; dd bs=1 count={} 2>/dev/null | od -An -tx1",
+        reply.len(),
+        reply.len()
+    );
+    launch.profile.arguments = vec!["-c".into(), script];
+    let session = Session::spawn_configured(&launch, || {}).unwrap();
+    let screen = wait_for(&session, |s| s.exited);
+    let hex: String = screen
+        .text()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    for expected in [reply, "\x1b]11;rgb:0101/0202/0303\x1b\\"] {
+        let expected: String = expected
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert!(hex.contains(&expected), "Missing {expected}: {hex}");
+    }
+    assert!(screen.error.is_none());
+}

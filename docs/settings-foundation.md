@@ -1,8 +1,8 @@
 # Settings foundation
 
-Open **… → Settings…**, or press **Ctrl+Shift+,** (Linux/Windows) / **Cmd+,** (macOS). Settings use a separate native window with the approved four sections. Appearance is editable; the other sections describe current behavior and clearly identify controls still to come.
+Open **… → Settings…**, or press **Ctrl+Shift+,** (Linux/Windows) / **Cmd+,** (macOS). Settings use a separate native window with the approved four sections. Appearance and Profiles are editable; the other sections describe current behavior and clearly identify controls still to come. See [profile and theme controls](profiles-themes.md).
 
-The appearance draft supports system/dark/light application chrome, installed monospace fonts, font size, independent horizontal/vertical padding, line height, and outline/bar/underline cursor. **Save** validates, writes, and applies it to the open terminal. **Cancel** or closing the settings window discards the draft. Shells, agents, and the session service keep running. Terminal ANSI/256/RGB colors are preserved; profile color themes are the next slice.
+The appearance draft supports system/dark/light application chrome, installed monospace fonts, font size, independent horizontal/vertical padding, line height, and outline/bar/underline cursor. **Save** validates, writes, and applies it to the open terminal. **Cancel** or closing the settings window discards the draft. Shells, agents, and the session service keep running. Terminal ANSI/256/RGB colors are preserved; profile color themes are configured under Profiles.
 
 ## Configuration and recovery locations
 
@@ -17,7 +17,7 @@ The active file is `settings.toml` in the platform configuration directory's `se
 The window shows the actual configuration path. **Edit configuration…** uses its registered desktop application; **Open backup folder** opens the recovery directory. Save once to create a missing settings file. `OPTERM_CONFIG_DIR` and `OPTERM_RECOVERY_DIR` override these two leaf directories for isolated development or custom placement. These do not change `OPTERM_STATE_DIR` or switch session services. The accepted folder picker, remembered storage location, migration, and cache controls remain future work.
 
 ```toml
-version = 1
+version = 2
 
 [appearance]
 chrome = "system"
@@ -29,7 +29,7 @@ line_height = 1.2
 cursor = "outline"
 ```
 
-Chrome accepts `system`, `dark`, or `light`; cursor accepts `outline`, `bar`, or `underline`. Font size is 8–40 logical pixels, padding 0–32, line height 1–2. Unknown fields, unsupported versions, nonfinite/out-of-range values, and files larger than 64 KiB are rejected. An unavailable font falls back to an available system monospace face. Saved settings are global across desktop instances; each instance checks external edits about once a second. The preview illustrates spacing with the currently installed application font; a newly selected family takes effect on Save.
+Chrome accepts `system`, `dark`, or `light`; cursor accepts `outline`, `bar`, or `underline`. Font size is 8–40 logical pixels, padding 0–32, line height 1–2. Version-1 appearance-only settings migrate in memory and remain untouched until Save. Profiles/themes use version 2. Unknown fields, unsupported versions, nonfinite/out-of-range values, and files larger than 64 KiB are rejected. An unavailable font falls back to an available system monospace face. Saved settings are global across desktop instances; each instance checks external edits about once a second. The preview illustrates spacing with the currently installed application font; a newly selected family takes effect on Save.
 
 ## Last-valid backup behavior
 
@@ -41,7 +41,7 @@ Chrome accepts `system`, `dark`, or `light`; cursor accepts `outline`, `bar`, or
 - The two files are not one filesystem transaction. A crash between replacements can leave newer valid settings and an older valid backup. The next successful load refreshes the backup from the valid settings file. A backup replacement/durability failure is reported explicitly; the app does not claim recovery was updated when it failed.
 - A small process lock serializes Opterm writers. External editors do not honor that lock; contents are compared just before committing to reduce conflicts, without claiming filesystem compare-and-swap guarantees.
 
-On Unix, directories must be private and user-owned (0700); atomic files use 0600. Windows directories receive an owner-only inherited DACL. Native Windows ACL/runtime validation remains pending. No database, command ledger, process backup, or secret-bearing profile environment is added.
+On Unix, directories must be private and user-owned (0700); atomic files use 0600. Windows directories receive an owner-only inherited DACL. Native Windows ACL/runtime validation remains pending. Marked secret environment values are omitted from recovery copies; reenter them before launching recovered profiles. No database, command ledger, process backup, or credential vault is added.
 
 ## Verification
 

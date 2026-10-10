@@ -7,6 +7,7 @@ pub struct Dialog {
     section: usize,
     pub message: Option<String>,
     pub conflict: bool,
+    profiles: crate::profiles_ui::Editor,
 }
 #[derive(Clone, Copy)]
 pub enum Action {
@@ -26,6 +27,7 @@ impl Dialog {
             section: 0,
             message: None,
             conflict: false,
+            profiles: crate::profiles_ui::Editor::default(),
         }
     }
     pub fn show(
@@ -101,8 +103,7 @@ impl Dialog {
                     ui.weak("Custom bindings and clipboard options come in a later slice.");
                 }
                 2 => {
-                    ui.label("New tabs and splits currently start the default system shell.");
-                    ui.weak("Named launch profiles and terminal color themes come next.");
+                    if let Some(message) = self.profiles.show(ui, &mut self.draft) { self.message = Some(message); }
                 }
                 _ => {
                     ui.label("Closing the desktop leaves shells and agents running in the session service.");
@@ -234,5 +235,5 @@ fn appearance(ui: &mut egui::Ui, a: &mut Appearance, fonts: &[String]) {
             color,
         );
     }
-    ui.weak("Profile color themes are coming next. Current terminal colors are preserved.");
+    ui.weak("Terminal color themes are selected in Profiles.");
 }

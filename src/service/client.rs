@@ -1,5 +1,6 @@
 //! UI-facing cache and one background IPC worker. No socket reads on the UI thread.
 use super::{Connection, Info, Reply, Request, Snapshot};
+use crate::profiles::Launch;
 use crate::terminal::Screen;
 use alacritty_terminal::term::TermMode;
 use anyhow::{Result, bail, ensure};
@@ -54,11 +55,13 @@ pub struct Client {
     sender: SyncSender<(Request, usize)>,
     state: Arc<Mutex<State>>,
     queued: Arc<AtomicUsize>,
+    pub profiles: bool,
 }
 impl Client {
     pub fn open(
         path: &Path,
-        program: &[String],
+        launch: Launch,
+        force_new: bool,
         restore: bool,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Arc<Self>> {
@@ -74,14 +77,26 @@ impl Client {
             state.views.insert(info.id);
             state.snapshot(*snapshot);
         }
-        if state.views.is_empty() || !program.is_empty() {
-            let Reply::Snapshot(snapshot) = connection.call(Request::Create(program.to_vec()))?
-            else {
-                bail!("Invalid new session reply");
+        if state.views.is_empty() || force_new {
+            let request = if connection.profiles {
+                Ok(Request::CreateProfile(Box::new(launch.clone())))
+            } else if launch.legacy_compatible() {
+                Ok(Request::Create(launch.program()))
+            } else {
+                Err(anyhow::anyhow!(
+                    "Running service predates launch profiles. Existing work was left running. Finish its sessions before stopping the service, or use an isolated OPTERM_STATE_DIR to try profiles."
+                ))
             };
-            state.views.insert(snapshot.info.id);
-            state.snapshot(*snapshot);
+            match request.and_then(|request| connection.call(request)) {
+                Ok(Reply::Snapshot(snapshot)) => {
+                    state.views.insert(snapshot.info.id);
+                    state.snapshot(*snapshot);
+                }
+                Ok(_) => state.error = Some("Invalid new session reply".into()),
+                Err(error) => state.error = Some(format!("{error:#}")),
+            }
         }
+        let profiles = connection.profiles;
         state.visible = state.views.iter().copied().collect();
         let state = Arc::new(Mutex::new(state));
         let queued = Arc::new(AtomicUsize::new(0));
@@ -90,6 +105,7 @@ impl Client {
             sender,
             state: state.clone(),
             queued: queued.clone(),
+            profiles,
         });
         thread::Builder::new().name("opterm-service-client".into()).spawn(move || {
             let mut last_list = Instant::now();
@@ -107,7 +123,7 @@ impl Client {
                                 Err(error) => {
                                     { let mut state = state.lock().unwrap();
                                     state.error = Some(format!("{error:#}"));
-                                    if matches!(request, Request::Create(_)) { state.created.push_back(None); }
+                                    if matches!(request, Request::Create(_) | Request::CreateProfile(_)) { state.created.push_back(None); }
                                     }
                                     // List checks whether the connection remains alive.
                                     let Reply::List(infos) = connection.call(Request::List)? else { bail!("Invalid session list"); };
@@ -162,12 +178,19 @@ impl Client {
 
     pub fn send(&self, request: Request) -> Result<()> {
         ensure!(
+            self.profiles || !matches!(&request, Request::CreateProfile(_) | Request::Themes(_)),
+            "Running service predates profiles/themes. Existing work stays running; finish its sessions before deliberately stopping the service, or try an isolated OPTERM_STATE_DIR."
+        );
+        ensure!(
             !self.state.lock().unwrap().disconnected,
             "Session service is disconnected"
         );
         let weight = match &request {
             Request::Write { bytes, .. } => bytes.len() + 128,
             Request::Paste { text, .. } => text.len() + 128,
+            Request::Create(_) | Request::CreateProfile(_) | Request::Themes(_) => {
+                serde_json::to_vec(&request)?.len() + 128
+            }
             _ => 512,
         };
         ensure!(
@@ -214,9 +237,12 @@ fn update(state: &mut State, request: &Request, reply: Reply) {
     if let Reply::Snapshot(snapshot) = reply {
         let id = snapshot.info.id;
         state.snapshot(*snapshot);
-        if matches!(request, Request::Create(_) | Request::Attach(_)) {
+        if matches!(
+            request,
+            Request::Create(_) | Request::CreateProfile(_) | Request::Attach(_)
+        ) {
             state.views.insert(id);
-            if matches!(request, Request::Create(_)) {
+            if matches!(request, Request::Create(_) | Request::CreateProfile(_)) {
                 state.created.push_back(Some(id));
             }
         }
@@ -257,7 +283,15 @@ impl RemoteSession {
         self.info().is_some_and(|i| i.controlled)
     }
     pub fn title(&self) -> String {
-        self.info().map(|i| i.title).unwrap_or_default()
+        self.info()
+            .map(|i| {
+                if i.title.is_empty() {
+                    i.profile.map(|p| p.name).unwrap_or_default()
+                } else {
+                    i.title
+                }
+            })
+            .unwrap_or_default()
     }
     pub fn name(&self) -> Option<String> {
         self.info().and_then(|i| i.name)

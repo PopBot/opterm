@@ -4,7 +4,7 @@ A lightweight cross-platform terminal for macOS, Linux, and Windows, with built-
 
 ## Current status
 
-The Rust prototype runs a real local shell in the approved thin layout, with tabs, splits, multiple windows, resize, selection, copy/paste, and scrollback. A small background service now keeps shells and terminal programs alive when you close or crash the desktop. Reopening Opterm reconnects to those live sessions. Appearance settings now have a compact separate window, TOML configuration, and a last-valid recovery backup. No database is involved. See [prototype status and limitations](docs/prototype-status.md).
+The Rust prototype runs a real local shell in the approved thin layout, with tabs, splits, multiple windows, resize, selection, copy/paste, and scrollback. A small background service now keeps shells and terminal programs alive when you close or crash the desktop. Reopening Opterm reconnects to those live sessions. Settings now include appearance, launch profiles, per-profile terminal themes, TOML configuration, and a last-valid recovery backup. No database is involved. See [prototype status and limitations](docs/prototype-status.md).
 
 ## Run locally
 
@@ -27,7 +27,7 @@ Close the window and run the same command again to return to your shells. Start 
 
 An explicit program creates a new session; reopening with no program restores existing sessions. The **Sessions** menu reattaches detached tabs. Cmd+W (macOS) or Ctrl+Shift+W (Linux/Windows) detaches the focused pane (the tab closes when its last pane is detached). **End session…** in the menu stops its work after confirmation. Use **New window** to open a fresh shell. Launching another ordinary instance restores existing sessions; controlled sessions are read-only there until you choose **Take control**.
 
-Splits keep the thin layout, with draggable dividers and a subtle outline around the focused pane. Each new pane starts its own default shell. Click a pane or use the focus shortcuts below; keyboard input and copy/paste use the focused pane. Closing a pane collapses its split and detaches its session. **Detach tab** in the menu detaches all its panes.
+Splits keep the thin layout, with draggable dividers and a subtle outline around the focused pane. Each new pane starts a separate session using the default profile. Click a pane or use the focus shortcuts below; keyboard input and copy/paste use the focused pane. Closing a pane collapses its split and detaches its session. **Detach tab** in the menu detaches all its panes.
 
 | Action | Linux / Windows | macOS |
 | --- | --- | --- |
@@ -44,9 +44,11 @@ Terminal output supports ANSI colors, the 256-color palette, and 24-bit RGB. New
 
 Open **… → Settings…** to adjust app appearance, monospace font, size, padding, line height, and cursor. **Save** applies changes without restarting shells; **Cancel** discards the draft. Invalid TOML edits keep your working settings and good recovery copy. **Restore last valid settings** loads the backup for review; click **Save** to restore it. See [settings locations and recovery behavior](docs/settings-foundation.md).
 
+In **Settings → Profiles**, create shell/agent presets with executable, arguments, starting folder, environment, and a terminal theme. Choose a default, right-click **+** to select a profile, or use the profile menus for tabs/splits. Neutral Dark/Light themes and custom colors are supported. Saving a profile affects new launches; editing its chosen theme updates live views without restarting programs. Marked secret environment values are omitted from the backup and must be reentered after recovery. See [profiles and themes](docs/profiles-themes.md).
+
 Live work survives window closure, but split layouts are currently window-local: reopening restores sessions as individual tabs. Saved split/window layouts are a later step.
 
-The service stays running when all windows close. Rebuilding the app leaves an existing service running its current code to preserve work. After finishing its sessions, deliberately stop it to load the rebuilt service on the next launch. To deliberately stop it and end **all** its sessions:
+The service stays running when all windows close. Rebuilding the app leaves an existing service running its current code to preserve work. Older services remain usable but reject the new profile/theme features until deliberately upgraded after work finishes. After finishing its sessions, deliberately stop it to load the rebuilt service on the next launch. To deliberately stop it and end **all** its sessions:
 
 ```sh
 ./target/release/opterm --stop-service

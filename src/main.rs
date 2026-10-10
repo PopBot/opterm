@@ -2,11 +2,13 @@
 
 mod input;
 mod layout;
+mod profiles_ui;
 mod settings_ui;
 use layout::{Axis, Layout};
 
 use eframe::egui::{self, Align2, Color32, FontId, Key, Pos2, Rect, Sense, Vec2};
 use opterm::{
+    profiles::Theme,
     service::{
         self, Request,
         client::{Client, RemoteSession},
@@ -78,6 +80,7 @@ struct App {
     font_database: fontdb::Database,
     font_names: Vec<String>,
     applied_appearance: Appearance,
+    applied_themes: Vec<Theme>,
 }
 
 fn install_font(ctx: &egui::Context, database: &fontdb::Database, family: &str) -> bool {
@@ -160,6 +163,7 @@ impl App {
             rename_text: String::new(),
             paste_requested: false,
             applied_appearance: settings.current.appearance.clone(),
+            applied_themes: Vec::new(),
             settings_dialog: None,
             settings_poll: Instant::now(),
             settings,
@@ -174,12 +178,27 @@ impl App {
         }
         let notify = cc.egui_ctx.clone();
         match service::state_dir().and_then(|path| {
-            Client::open(&path, &app.program, restore, move || {
+            let mut launch = app
+                .settings
+                .current
+                .launch(&app.settings.current.default_profile().id)?;
+            if let Some(program) = app.program.first() {
+                launch.profile.executable = program.clone();
+                launch.profile.arguments = app.program[1..].to_vec();
+            }
+            Client::open(&path, launch, !app.program.is_empty(), restore, move || {
                 notify.request_repaint()
             })
         }) {
             Ok(client) => app.client = Some(client),
             Err(error) => app.error = Some(format!("{error:#}")),
+        }
+        app.apply_appearance(&cc.egui_ctx);
+        if app.client.as_ref().is_some_and(|client| !client.profiles) {
+            let previous = app.settings.notice.take().unwrap_or_default();
+            app.settings.notice = Some(format!(
+                "{previous} Running service predates profiles and themes; existing work stays running. Finish its sessions before stopping the service, or use an isolated OPTERM_STATE_DIR to try the new features."
+            ));
         }
         app.sync_tabs();
         Ok(app)
@@ -201,6 +220,16 @@ impl App {
             install_font(ctx, &self.font_database, &appearance.font_family);
         }
         self.applied_appearance = appearance.clone();
+        let themes = self.settings.current.all_themes();
+        if let Some(client) = &self.client
+            && client.profiles
+            && self.applied_themes != themes
+        {
+            match client.send(Request::Themes(themes.clone())) {
+                Ok(()) => self.applied_themes = themes,
+                Err(error) => self.error = Some(format!("Apply themes: {error:#}")),
+            }
+        }
         ctx.request_repaint();
     }
     fn show_settings(&mut self, ctx: &egui::Context) {
@@ -342,8 +371,19 @@ impl App {
             .and_then(|tab| self.panes.get(&tab.focused))
     }
     fn create(&mut self, placement: Placement) {
+        self.create_with_profile(
+            placement,
+            &self.settings.current.default_profile().id.clone(),
+        );
+    }
+    fn create_with_profile(&mut self, placement: Placement, profile: &str) {
         if let Some(client) = &self.client {
-            match client.send(Request::Create(Vec::new())) {
+            let request = self.settings.current.launch(profile).and_then(|launch| {
+                if client.profiles { Ok(Request::CreateProfile(Box::new(launch))) }
+                else if launch.legacy_compatible() { Ok(Request::Create(launch.program())) }
+                else { anyhow::bail!("Running service predates launch profiles; existing work stays running. Finish its sessions before stopping it, or use an isolated OPTERM_STATE_DIR.") }
+            });
+            match request.and_then(|request| client.send(request)) {
                 Ok(()) => self.pending.push_back(placement),
                 Err(error) => self.error = Some(format!("{error:#}")),
             }
@@ -361,6 +401,30 @@ impl App {
             });
         } else {
             self.new_tab();
+        }
+    }
+    fn split_with_profile(&mut self, axis: Axis, profile: &str) {
+        let placement = self
+            .tabs
+            .get(self.active)
+            .map(|tab| Placement::Split {
+                tab: tab.key,
+                pane: tab.focused,
+                axis,
+            })
+            .unwrap_or(Placement::Tab);
+        self.create_with_profile(placement, profile);
+    }
+    fn profile_menu(&mut self, ui: &mut egui::Ui, axis: Option<Axis>) {
+        for profile in self.settings.current.all_profiles() {
+            if ui.button(&profile.name).clicked() {
+                if let Some(axis) = axis {
+                    self.split_with_profile(axis, &profile.id);
+                } else {
+                    self.create_with_profile(Placement::Tab, &profile.id);
+                }
+                ui.close();
+            }
         }
     }
     fn new_window(&mut self) {
@@ -516,9 +580,13 @@ impl App {
                             self.rename_text = tab.name.clone().unwrap_or_default();
                         }
                     }
-                    if ui.button("+").on_hover_text("New shell tab").clicked() {
+                    let plus = ui
+                        .button("+")
+                        .on_hover_text("New default-profile tab; right-click to choose a profile");
+                    if plus.clicked() {
                         self.new_tab();
                     }
+                    plus.context_menu(|ui| self.profile_menu(ui, None));
                     if let Some(notice) = &self.settings.notice
                         && ui.button("Settings notice").on_hover_text(notice).clicked()
                     {
@@ -576,6 +644,15 @@ impl App {
                                 self.new_tab();
                                 ui.close();
                             }
+                            ui.menu_button("New tab with profile", |ui| {
+                                self.profile_menu(ui, None)
+                            });
+                            ui.menu_button("Split right with profile", |ui| {
+                                self.profile_menu(ui, Some(Axis::Right))
+                            });
+                            ui.menu_button("Split below with profile", |ui| {
+                                self.profile_menu(ui, Some(Axis::Below))
+                            });
                             if ui.button("New window").clicked() {
                                 self.new_window();
                                 ui.close();
@@ -668,6 +745,12 @@ impl App {
                 let panes = self.pane_rects.clone();
                 for (id, rect) in panes {
                     let focused = self.tabs[self.active].focused == id;
+                    let background = self.panes[&id].screen().background;
+                    ui.painter().rect_filled(
+                        rect,
+                        0,
+                        Color32::from_rgb(background[0], background[1], background[2]),
+                    );
                     if self.pane_rects.len() > 1 && focused {
                         ui.painter().rect_stroke(
                             rect.shrink(1.0),
@@ -707,7 +790,6 @@ impl App {
         rect: Rect,
         focused: bool,
     ) {
-        let bg = Color32::from_rgb(BACKGROUND[0], BACKGROUND[1], BACKGROUND[2]);
         let session = &self.panes[&id];
         let response = ui.interact(rect, egui::Id::new(("pane", id)), Sense::click_and_drag());
         let appearance = &self.settings.current.appearance;
@@ -759,6 +841,16 @@ impl App {
             }
         }
         let screen = session.screen();
+        let bg = Color32::from_rgb(
+            screen.background[0],
+            screen.background[1],
+            screen.background[2],
+        );
+        let cursor_color = Color32::from_rgb(
+            screen.cursor_color[0],
+            screen.cursor_color[1],
+            screen.cursor_color[2],
+        );
         if let Some(error) = &screen.error {
             self.error = Some(error.clone());
         }
@@ -770,7 +862,11 @@ impl App {
                 Vec2::new(width * if cell.wide { 2.0 } else { 1.0 }, height),
             );
             let cell_bg = if cell.selected {
-                Color32::from_rgb(65, 83, 112)
+                Color32::from_rgb(
+                    screen.selection_color[0],
+                    screen.selection_color[1],
+                    screen.selection_color[2],
+                )
             } else {
                 Color32::from_rgb(cell.bg[0], cell.bg[1], cell.bg[2])
             };
@@ -800,7 +896,7 @@ impl App {
                     painter.rect_stroke(
                         cursor_rect,
                         0,
-                        (1.0, Color32::from_gray(235)),
+                        (1.0, cursor_color),
                         egui::StrokeKind::Inside,
                     );
                 }
@@ -808,13 +904,13 @@ impl App {
                     painter.rect_filled(
                         Rect::from_min_size(pos, Vec2::new(2.0, height)),
                         0,
-                        Color32::from_gray(235),
+                        cursor_color,
                     );
                 }
                 Cursor::Underline => {
                     painter.line_segment(
                         [cursor_rect.left_bottom(), cursor_rect.right_bottom()],
-                        (2.0, Color32::from_gray(235)),
+                        (2.0, cursor_color),
                     );
                 }
             }

@@ -1798,6 +1798,7 @@ dependencies = [
  "directories",
  "eframe",
  "fontdb",
+ "getrandom 0.4.3",
  "interprocess",
  "libc",
  "open",

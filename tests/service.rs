@@ -337,3 +337,172 @@ fn interactive_sessions_enable_color_and_keep_palette_and_truecolor() {
         );
     }
 }
+
+#[test]
+fn configured_profiles_capture_launch_and_live_themes_preserve_program_colors() {
+    use opterm::profiles::{Environment, Launch, Profile, Rgb, Theme};
+    let service = Service::start();
+    let mut connection = service.connect();
+    assert!(connection.profiles);
+    let theme = Theme {
+        id: "custom".into(),
+        name: "Custom".into(),
+        ..Theme::light()
+    };
+    let profile = Profile {
+        id: "agent".into(),
+        name: "Agent shell".into(),
+        executable: "/bin/sh".into(),
+        arguments: vec!["-i".into()],
+        directory: service.directory.path().display().to_string(),
+        theme: theme.id.clone(),
+        environment: vec![Environment {
+            name: "PROFILE_VALUE".into(),
+            value: "one value with spaces".into(),
+            secret: false,
+        }],
+    };
+    let launch = Launch {
+        profile,
+        workspace_directory: "/this/workspace/fallback/is/unavailable".into(),
+        theme,
+    };
+    let initial = snapshot(
+        connection
+            .call(Request::CreateProfile(Box::new(launch.clone())))
+            .unwrap(),
+    );
+    let id = initial.info.id;
+    assert_eq!(initial.info.profile.as_ref().unwrap().name, "Agent shell");
+    assert_eq!(initial.screen.background, Theme::light().background.0);
+    write(
+        &mut connection,
+        id,
+        "stty -echo; printf '%s|%s|%s' $$ \"$PWD\" \"$PROFILE_VALUE\" > captured; printf 'READY\\n'\n",
+    );
+    wait_screen(&mut connection, id, "READY");
+    let captured = std::fs::read_to_string(service.directory.path().join("captured")).unwrap();
+    assert!(captured.ends_with("|one value with spaces"));
+    assert!(captured.contains(&service.directory.path().display().to_string()));
+    write(
+        &mut connection,
+        id,
+        "printf '\\033[2J\\033[H\\033[31mA\\033[38;2;9;8;7mB\\033[0m'; printf '\\033]4;2;rgb:04/05/06\\007\\033[32mC\\033[0m'; printf '\\033]11;rgb:07/08/09\\007'\n",
+    );
+    wait_screen(&mut connection, id, "ABC");
+    let mut changed = launch.theme.clone();
+    changed.ansi[1] = Rgb([1, 2, 3]);
+    changed.foreground = Rgb([44, 55, 66]);
+    connection
+        .call(Request::Themes(vec![changed.clone()]))
+        .unwrap();
+    let updated = snapshot(connection.call(Request::View { id, since: None }).unwrap());
+    let cell = |c| {
+        updated
+            .screen
+            .cells
+            .iter()
+            .find(|cell| cell.text == c)
+            .unwrap()
+    };
+    assert_eq!(cell("A").fg, [1, 2, 3]);
+    assert_eq!(cell("B").fg, [9, 8, 7]);
+    assert_eq!(cell("C").fg, [4, 5, 6]);
+    assert_eq!(updated.screen.background, [7, 8, 9]);
+    // Removing a theme falls back without changing the process or captured launch environment.
+    connection.call(Request::Themes(vec![])).unwrap();
+    write(
+        &mut connection,
+        id,
+        "printf '%s|%s|%s' $$ \"$PWD\" \"$PROFILE_VALUE\" > after; printf 'STILL_RUNNING\\n'\n",
+    );
+    wait_screen(&mut connection, id, "STILL_RUNNING");
+    assert_eq!(
+        std::fs::read_to_string(service.directory.path().join("after")).unwrap(),
+        captured
+    );
+    drop(connection);
+    let mut reopened = service.connect();
+    let restored = snapshot(reopened.call(Request::Attach(id)).unwrap());
+    assert_eq!(restored.info.profile.as_ref().unwrap().id, "agent");
+    let before = list(&mut reopened).len();
+    let mut bad = launch.clone();
+    bad.profile.directory = "/this/profile/folder/is/unavailable".into();
+    assert!(
+        reopened
+            .call(Request::CreateProfile(Box::new(bad)))
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("unavailable")
+    );
+    let mut bad = launch;
+    bad.profile.executable = "/this/program/does/not/exist".into();
+    assert!(
+        reopened
+            .call(Request::CreateProfile(Box::new(bad)))
+            .is_err()
+    );
+    assert_eq!(list(&mut reopened).len(), before);
+}
+
+#[test]
+#[ignore = "requires a preserved pre-profile Opterm binary in OPTERM_TEST_OLD_BINARY"]
+fn older_service_keeps_existing_work_when_profiles_are_rejected() {
+    use opterm::{profiles::Launch, service::client::Client};
+    let directory = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let child = Command::new(std::env::var_os("OPTERM_TEST_OLD_BINARY").unwrap())
+        .arg("--session-service")
+        .env("OPTERM_STATE_DIR", directory.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let service = Service { directory, child };
+    let mut connection = service.connect();
+    assert!(!connection.profiles);
+    let id = shell(&mut connection);
+    let original = service.directory.path().join("old-pid");
+    write(
+        &mut connection,
+        id,
+        &format!(
+            "printf '%s' $$ > '{}'; printf 'OLD_READY\\n'\n",
+            original.display()
+        ),
+    );
+    wait_screen(&mut connection, id, "OLD_READY");
+    drop(connection);
+    let client = Client::open(
+        service.directory.path(),
+        Launch::legacy(&[]),
+        false,
+        true,
+        || {},
+    )
+    .unwrap();
+    assert!(!client.profiles);
+    assert!(
+        client
+            .send(Request::CreateProfile(Box::new(Launch::legacy(&[]))))
+            .is_err()
+    );
+    let after = service.directory.path().join("still-alive");
+    client
+        .session(id)
+        .write(format!("printf '%s' $$ > '{}'\n", after.display()).as_bytes())
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !after.exists() {
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        std::fs::read_to_string(&after).unwrap(),
+        std::fs::read_to_string(&original).unwrap()
+    );
+    assert!(client.take_error().is_none());
+}

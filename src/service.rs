@@ -1,5 +1,6 @@
 //! Small, local session service. Live state stays in this process, not in a DB.
-use crate::terminal::{BACKGROUND, Screen, Session};
+use crate::profiles::{Launch, ProfileTag, Theme};
+use crate::terminal::{Screen, Session};
 use anyhow::{Context, Result, bail, ensure};
 use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions, Name, prelude::*};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -35,6 +36,8 @@ pub struct Info {
     pub exited: bool,
     pub attached: bool,
     pub controlled: bool,
+    #[serde(default)]
+    pub profile: Option<ProfileTag>,
 }
 #[derive(Serialize, Deserialize)]
 pub struct Snapshot {
@@ -48,6 +51,8 @@ pub enum Request {
     Hello(u32),
     List,
     Create(Vec<String>),
+    CreateProfile(Box<Launch>),
+    Themes(Vec<Theme>),
     Attach(u64),
     Detach(u64),
     TakeControl(u64),
@@ -89,7 +94,12 @@ pub enum Request {
 }
 #[derive(Serialize, Deserialize)]
 pub enum Reply {
-    Hello { version: u32, pid: u32 },
+    Hello {
+        version: u32,
+        pid: u32,
+        #[serde(default)]
+        profiles: bool,
+    },
     List(Vec<Info>),
     Snapshot(Box<Snapshot>),
     Unchanged,
@@ -172,17 +182,24 @@ fn endpoint(path: &Path) -> Result<Name<'static>> {
 
 pub struct Connection {
     stream: LocalSocketStream,
+    pub profiles: bool,
 }
 impl Connection {
     pub fn connect(path: &Path) -> Result<Self> {
         let path = fs::canonicalize(path)?;
         let mut connection = Self {
             stream: LocalSocketStream::connect(endpoint(&path)?)?,
+            profiles: false,
         };
         match connection.call(Request::Hello(VERSION))? {
             Reply::Hello {
-                version: VERSION, ..
-            } => Ok(connection),
+                version: VERSION,
+                profiles,
+                ..
+            } => {
+                connection.profiles = profiles;
+                Ok(connection)
+            }
             _ => bail!("Unsupported session service version; existing work was left running"),
         }
     }
@@ -261,6 +278,7 @@ struct Managed {
     owner: Option<u64>,
     viewers: BTreeSet<u64>,
     revision: u64,
+    profile: Option<ProfileTag>,
 }
 impl Managed {
     fn info(&self, id: u64, client: u64) -> Info {
@@ -271,6 +289,7 @@ impl Managed {
             exited: self.session.exited(),
             attached: !self.viewers.is_empty(),
             controlled: self.owner == Some(client),
+            profile: self.profile.clone(),
         }
     }
     fn revision(&self) -> u64 {
@@ -282,8 +301,9 @@ impl Managed {
         // must refresh again rather than incorrectly marking stale cells current.
         let revision = self.revision();
         let mut screen = self.session.screen();
+        let background = screen.background;
         screen.cells.retain(|cell| {
-            cell.text != " " || cell.bg != BACKGROUND || cell.selected || cell.underline
+            cell.text != " " || cell.bg != background || cell.selected || cell.underline
         });
         Reply::Snapshot(Box::new(Snapshot {
             info: self.info(id, client),
@@ -306,6 +326,28 @@ struct Hub {
     next_id: u64,
 }
 
+fn create(hub: &mut Hub, client: u64, launch: Launch, configured: bool) -> Result<Reply> {
+    ensure!(
+        hub.sessions.len() < MAX_SESSIONS,
+        "128-session prototype limit reached. End unused sessions."
+    );
+    let session = Session::spawn_configured(&launch, || {})
+        .with_context(|| format!("Launch profile {}", launch.profile.name))?;
+    hub.next_id += 1;
+    let id = hub.next_id;
+    let managed = Managed {
+        session,
+        name: None,
+        owner: Some(client),
+        viewers: BTreeSet::from([client]),
+        revision: 0,
+        profile: configured.then(|| launch.profile.tag()),
+    };
+    let reply = managed.snapshot(id, client);
+    hub.sessions.insert(id, managed);
+    Ok(reply)
+}
+
 fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
     match request {
         Request::Hello(version) => {
@@ -313,6 +355,7 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
             return Ok(Reply::Hello {
                 version: VERSION,
                 pid: std::process::id(),
+                profiles: true,
             });
         }
         Request::List => {
@@ -323,24 +366,28 @@ fn handle(hub: &mut Hub, client: u64, request: Request) -> Result<Reply> {
                     .collect(),
             ));
         }
-        Request::Create(program) => {
-            ensure!(
-                hub.sessions.len() < MAX_SESSIONS,
-                "128-session prototype limit reached. End unused sessions."
-            );
-            let session = Session::spawn(&program, || {})?;
-            hub.next_id += 1;
-            let id = hub.next_id;
-            let managed = Managed {
-                session,
-                name: None,
-                owner: Some(client),
-                viewers: BTreeSet::from([client]),
-                revision: 0,
-            };
-            let reply = managed.snapshot(id, client);
-            hub.sessions.insert(id, managed);
-            return Ok(reply);
+        Request::Create(program) => return create(hub, client, Launch::legacy(&program), false),
+        Request::CreateProfile(launch) => return create(hub, client, *launch, true),
+        Request::Themes(themes) => {
+            ensure!(themes.len() <= 66, "Too many terminal themes");
+            for theme in &themes {
+                theme.validate()?;
+            }
+            for managed in hub.sessions.values() {
+                let id = managed
+                    .profile
+                    .as_ref()
+                    .map(|p| p.theme.as_str())
+                    .unwrap_or(crate::profiles::DARK);
+                managed.session.set_theme(
+                    themes
+                        .iter()
+                        .find(|t| t.id == id)
+                        .cloned()
+                        .unwrap_or_else(Theme::dark),
+                );
+            }
+            return Ok(Reply::Done);
         }
         Request::End(id) => {
             let managed = hub.sessions.get(&id).context("Session no longer exists")?;
@@ -508,6 +555,7 @@ pub fn serve(path: &Path) -> Result<()> {
                 &Reply::Hello {
                     version: VERSION,
                     pid: std::process::id(),
+                    profiles: true,
                 },
             )
             .is_err()

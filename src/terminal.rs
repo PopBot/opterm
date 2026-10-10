@@ -9,6 +9,7 @@ use std::{
     thread,
 };
 
+use crate::profiles::{Launch, Theme};
 use alacritty_terminal::{
     event::{Event, EventListener, WindowSize},
     grid::{Dimensions, Scroll},
@@ -22,7 +23,7 @@ use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_s
 
 pub const BACKGROUND: [u8; 3] = [31, 31, 33];
 pub const FOREGROUND: [u8; 3] = [225, 225, 226];
-const ANSI: [[u8; 3]; 16] = [
+pub const ANSI: [[u8; 3]; 16] = [
     [25, 25, 27],
     [205, 85, 85],
     [110, 185, 120],
@@ -84,12 +85,15 @@ struct Status {
 }
 type Writer = SyncSender<Vec<u8>>;
 type Wake = Arc<dyn Fn() + Send + Sync>;
+type ColorReply = (usize, Arc<dyn Fn(Rgb) -> String + Send + Sync>);
+type ColorReplies = Arc<Mutex<Vec<ColorReply>>>;
 
 #[derive(Clone)]
 struct Listener {
     writer: Writer,
     status: Arc<Mutex<Status>>,
     size: Arc<Mutex<PtySize>>,
+    color_replies: ColorReplies,
 }
 impl EventListener for Listener {
     fn send_event(&self, event: Event) {
@@ -104,8 +108,14 @@ impl EventListener for Listener {
             }
             Event::PtyWrite(text) => Some(text),
             Event::ColorRequest(index, format) => {
-                let [r, g, b] = palette(index);
-                Some(format(Rgb { r, g, b }))
+                let mut replies = self.color_replies.lock().unwrap();
+                if replies.len() < 64 {
+                    replies.push((index, format));
+                } else {
+                    self.status.lock().unwrap().error =
+                        Some("Too many pending terminal color queries".into());
+                }
+                None
             }
             Event::TextAreaSizeRequest(format) => {
                 let size = self.size.lock().unwrap();
@@ -141,6 +151,12 @@ pub struct Cell {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Screen {
     pub cells: Vec<Cell>,
+    #[serde(default = "default_background")]
+    pub background: [u8; 3],
+    #[serde(default = "default_cursor_color")]
+    pub cursor_color: [u8; 3],
+    #[serde(default = "default_selection_color")]
+    pub selection_color: [u8; 3],
     pub cursor: Option<(usize, usize)>,
     #[serde(with = "mode_bits")]
     pub mode: TermMode,
@@ -148,10 +164,22 @@ pub struct Screen {
     pub exited: bool,
     pub error: Option<String>,
 }
+fn default_background() -> [u8; 3] {
+    BACKGROUND
+}
+fn default_cursor_color() -> [u8; 3] {
+    [235, 235, 235]
+}
+fn default_selection_color() -> [u8; 3] {
+    [65, 83, 112]
+}
 impl Screen {
     pub fn empty() -> Self {
         Self {
             cells: Vec::new(),
+            background: BACKGROUND,
+            cursor_color: default_cursor_color(),
+            selection_color: default_selection_color(),
             cursor: None,
             mode: TermMode::empty(),
             title: String::new(),
@@ -189,9 +217,18 @@ pub struct Session {
     killer: Box<dyn ChildKiller + Send + Sync>,
     pub generation: Arc<AtomicU64>,
     wake: Wake,
+    theme: Arc<Mutex<Theme>>,
 }
 impl Session {
     pub fn spawn(program: &[String], wake: impl Fn() + Send + Sync + 'static) -> Result<Self> {
+        Self::spawn_configured(&Launch::legacy(program), wake)
+    }
+    pub fn spawn_configured(
+        launch: &Launch,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Self> {
+        let directory = launch.directory()?;
+        let program = launch.program();
         let size = PtySize {
             rows: 32,
             cols: 100,
@@ -214,6 +251,10 @@ impl Session {
         // Tool launchers commonly suppress color for captured output. A real
         // interactive PTY should advertise its own color capability instead.
         command.env_remove("NO_COLOR");
+        command.cwd(directory);
+        for env in &launch.profile.environment {
+            command.env(&env.name, &env.value);
+        }
         let mut child = pair
             .slave
             .spawn_command(command)
@@ -225,10 +266,13 @@ impl Session {
         let (writer, input) = sync_channel::<Vec<u8>>(64);
         let size = Arc::new(Mutex::new(size));
         let status = Arc::new(Mutex::new(Status::default()));
+        let theme = Arc::new(Mutex::new(launch.theme.clone()));
+        let color_replies: ColorReplies = Arc::default();
         let listener = Listener {
             writer: writer.clone(),
             status: status.clone(),
             size: size.clone(),
+            color_replies: color_replies.clone(),
         };
         let terminal = Arc::new(Mutex::new(Term::new(
             Config {
@@ -262,6 +306,8 @@ impl Session {
             })?;
         let term = terminal.clone();
         let read_status = status.clone();
+        let read_theme = theme.clone();
+        let read_writer = writer.clone();
         let changed = generation.clone();
         let notify = wake.clone();
         thread::Builder::new()
@@ -273,7 +319,28 @@ impl Session {
                     match reader.read(&mut buffer) {
                         Ok(0) => break,
                         Ok(count) => {
-                            processor.advance(&mut *term.lock().unwrap(), &buffer[..count]);
+                            let replies = {
+                                let mut terminal = term.lock().unwrap();
+                                processor.advance(&mut *terminal, &buffer[..count]);
+                                let pending = std::mem::take(&mut *color_replies.lock().unwrap());
+                                let content = terminal.renderable_content();
+                                let theme = read_theme.lock().unwrap();
+                                pending
+                                    .into_iter()
+                                    .map(|(index, format)| {
+                                        let [r, g, b] = content.colors[index]
+                                            .map(|rgb| [rgb.r, rgb.g, rgb.b])
+                                            .unwrap_or_else(|| theme.palette(index));
+                                        format(Rgb { r, g, b }).into_bytes()
+                                    })
+                                    .collect::<Vec<_>>()
+                            };
+                            for reply in replies {
+                                if let Err(error) = read_writer.try_send(reply) {
+                                    read_status.lock().unwrap().error =
+                                        Some(format!("Terminal color reply failed: {error}"));
+                                }
+                            }
                             changed.fetch_add(1, Ordering::Relaxed);
                             notify();
                         }
@@ -315,7 +382,17 @@ impl Session {
             killer,
             generation,
             wake,
+            theme,
         })
+    }
+
+    pub fn set_theme(&self, theme: Theme) {
+        let mut current = self.theme.lock().unwrap();
+        if *current != theme {
+            *current = theme;
+            self.generation.fetch_add(1, Ordering::Relaxed);
+            (self.wake)();
+        }
     }
 
     pub fn write(&self, bytes: &[u8]) -> Result<()> {
@@ -414,14 +491,15 @@ impl Session {
     pub fn screen(&self) -> Screen {
         let term = self.terminal.lock().unwrap();
         let content = term.renderable_content();
+        let theme = self.theme.lock().unwrap().clone();
         let color = |color: Color| match color {
             Color::Spec(rgb) => [rgb.r, rgb.g, rgb.b],
             Color::Indexed(index) => content.colors[index as usize]
                 .map(|rgb| [rgb.r, rgb.g, rgb.b])
-                .unwrap_or_else(|| palette(index as usize)),
+                .unwrap_or_else(|| theme.palette(index as usize)),
             Color::Named(name) => content.colors[name]
                 .map(|rgb| [rgb.r, rgb.g, rgb.b])
-                .unwrap_or_else(|| palette(name as usize)),
+                .unwrap_or_else(|| theme.palette(name as usize)),
         };
         let cursor = content
             .mode
@@ -483,6 +561,13 @@ impl Session {
         let status = self.status.lock().unwrap();
         Screen {
             cells,
+            background: color(Color::Named(
+                alacritty_terminal::vte::ansi::NamedColor::Background,
+            )),
+            cursor_color: color(Color::Named(
+                alacritty_terminal::vte::ansi::NamedColor::Cursor,
+            )),
+            selection_color: theme.selection.0,
             cursor,
             mode,
             title: status.title.clone(),
