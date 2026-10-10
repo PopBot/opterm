@@ -276,6 +276,17 @@ impl Session {
         for env in &launch.profile.environment {
             command.env(&env.name, &env.value);
         }
+        #[cfg(windows)]
+        {
+            // Console launchers and CREATE_NEW_PROCESS_GROUP can leave an
+            // inheritable Ctrl+C-ignore flag. Fresh ConPTY children must not
+            // inherit it. Detached/GUI parents may have no attached console.
+            // SAFETY: a null handler changes only this process's inheritance
+            // attribute; it does not dereference pointers or signal children.
+            unsafe {
+                windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 0);
+            }
+        }
         let mut child = pair
             .slave
             .spawn_command(command)

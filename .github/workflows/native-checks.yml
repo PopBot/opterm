@@ -50,7 +50,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             build-essential pkg-config libx11-dev libxi-dev libxcursor-dev \
             libxrandr-dev libxinerama-dev libgl1-mesa-dev libwayland-dev \
-            libxkbcommon-dev weston xvfb x11-apps libxtst6 xclip fonts-dejavu-core fonts-noto-cjk
+            libxkbcommon-dev libxkbcommon-x11-dev weston xvfb x11-apps libxtst6 xclip fonts-dejavu-core fonts-noto-cjk
       - name: Install stable Rust and check tools
         id: rust
         run: |

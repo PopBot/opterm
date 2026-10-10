@@ -101,7 +101,7 @@ The service stays running when all windows close. Rebuilding the app leaves an e
 ./target/release/opterm --stop-service
 ```
 
-Use an installed Rust toolchain and a native desktop session. The first build downloads dependencies. Linux X11 is tested; macOS, Windows, and Wayland runtime behavior remains unverified. Reboot, logout, or service failure can end work; this prototype does not replay old commands or restore lost processes.
+Use an installed Rust toolchain and a native desktop session. The first build downloads dependencies. Linux X11 and focused native Wayland checks pass. Native macOS/Windows build and PTY coverage is tracked in the [platform guide](docs/platform-validation.md); their desktop acceptance remains pending. Reboot, logout, or service failure can end work; this prototype does not replay old commands or restore lost processes.
 
 ## Project documents
 

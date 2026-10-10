@@ -287,7 +287,9 @@ impl Connection {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            command.creation_flags(0x0000_0008 | 0x0000_0200); // Detached process, new process group.
+            // Detach from the desktop's console without disabling Ctrl+C in
+            // descendants through CREATE_NEW_PROCESS_GROUP.
+            command.creation_flags(0x0000_0008); // DETACHED_PROCESS.
         }
         let mut child = command
             .spawn()
@@ -622,6 +624,12 @@ pub fn serve(path: &Path) -> Result<()> {
             }
             Err(error) => return Err(error.into()),
         };
+        // BSD accepts inherit the listener's nonblocking flag. Framed peer
+        // reads must block between requests instead of treating WouldBlock as EOF.
+        if let Err(error) = stream.set_nonblocking(false) {
+            eprintln!("Configure accepted session transport: {error}");
+            continue;
+        }
         let client = next_client.fetch_add(1, Ordering::Relaxed);
         let hub = hub.clone();
         let running = running.clone();

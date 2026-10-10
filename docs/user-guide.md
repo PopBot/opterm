@@ -2,7 +2,7 @@
 
 Opterm is a native terminal for ordinary shells and installed AI CLI agents. Its background session service keeps programs running when you close the desktop, and saved layouts reconnect to that work when you reopen it.
 
-This guide describes the current prototype. Linux X11 has been tested; macOS, Windows, and Wayland runtime coverage remains pending. Check [delivery progress](delivery-progress.md) for current validation and remaining platform work. The screenshots show real Linux app captures, not mockups.
+This guide describes the current prototype. Linux X11 and a focused native Wayland check have passed. Native macOS/Windows build and PTY results are tracked separately from desktop acceptance in the [platform guide](platform-validation.md). Check [delivery progress](delivery-progress.md) for current validation and remaining platform work. The screenshots show real Linux app captures, not mockups.
 
 ## Start the terminal
 

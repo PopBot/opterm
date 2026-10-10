@@ -14,6 +14,13 @@ use std::{
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 
+fn interrupt_program() -> Vec<String> {
+    program(
+        "trap 'printf INTERRUPTED; exit 0' INT; printf 'READY\\r\\n'; sleep 30",
+        "[Console]::WriteLine('READY'); try { Start-Sleep -Seconds 30 } finally { [Console]::WriteLine('INTERRUPTED') }",
+    )
+}
+
 fn program(unix: &str, windows: &str) -> Vec<String> {
     if cfg!(windows) {
         vec![
@@ -83,15 +90,21 @@ fn native_pty_colors_unicode_and_resize() {
 
 #[test]
 fn native_ctrl_c_interrupts_a_foreground_command() {
-    let command = program(
-        "trap 'printf INTERRUPTED; exit 0' INT; printf 'READY\\r\\n'; sleep 30",
-        "[Console]::WriteLine('READY'); Start-Sleep -Seconds 30",
-    );
+    #[cfg(windows)]
+    {
+        // Simulate an inheritable ignore flag left by a console launcher or
+        // CREATE_NEW_PROCESS_GROUP. Session launch must clear it for the child.
+        // SAFETY: this null handler changes only the test process's attribute.
+        unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 1);
+        }
+    }
+    let command = interrupt_program();
     let session = Session::spawn(&command, || {}).unwrap();
     wait_screen(&session, |screen| screen.text().contains("READY"));
     let started = Instant::now();
     session.write(b"\x03").unwrap();
-    wait_screen(&session, |screen| screen.exited);
+    wait_screen(&session, |screen| screen.text().contains("INTERRUPTED"));
     assert!(
         started.elapsed() < TIMEOUT,
         "Ctrl+C did not interrupt the child"
@@ -114,13 +127,18 @@ impl Service {
             std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
                 .unwrap();
         }
-        let child = Command::new(env!("CARGO_BIN_EXE_opterm"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_opterm"));
+        command
             .arg("--session-service")
             .env("OPTERM_STATE_DIR", directory.path())
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap();
+            .stdout(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0000_0008); // Match the detached production service.
+        }
+        let child = command.spawn().unwrap();
         let service = Self { directory, child };
         service.connect();
         service
@@ -191,6 +209,9 @@ fn native_local_service_reattaches_same_process_and_state_without_recording() {
     let mut first = service.connect();
     assert!(first.search_supported && first.history_supported && first.profiles);
     let instance = first.instance.clone();
+    // Accepted transports must stay open while the desktop is idle. On BSD
+    // inherited O_NONBLOCK otherwise closes a peer immediately after Hello.
+    thread::sleep(Duration::from_millis(100));
     first
         .call(Request::ConfigHistory(Options {
             enabled: false,
@@ -271,4 +292,18 @@ fn native_local_service_reattaches_same_process_and_state_without_recording() {
         1,
         "Reattachment must not replace or duplicate work"
     );
+    // Interruption must also work through the service's detached launch, whose
+    // parent may have no console for SetConsoleCtrlHandler to reset.
+    let interrupt = snapshot(reopened.call(Request::Create(interrupt_program())).unwrap());
+    let interrupt_id = interrupt.info.id;
+    wait_remote(&mut reopened, interrupt_id, "READY");
+    let started = Instant::now();
+    reopened
+        .call(Request::Write {
+            id: interrupt_id,
+            bytes: b"\x03".to_vec(),
+        })
+        .unwrap();
+    wait_remote(&mut reopened, interrupt_id, "INTERRUPTED");
+    assert!(started.elapsed() < TIMEOUT);
 }

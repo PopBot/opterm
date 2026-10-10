@@ -26,7 +26,7 @@ The Linux job additionally builds the desktop and runs `scripts/smoke_gui.py` an
 For the same Linux checks locally, install the build/display dependencies, then run:
 
 ```sh
-sudo apt-get install build-essential pkg-config libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libgl1-mesa-dev libwayland-dev libxkbcommon-dev xvfb x11-apps libxtst6 xclip fonts-dejavu-core fonts-noto-cjk
+sudo apt-get install build-essential pkg-config libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libgl1-mesa-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev xvfb x11-apps libxtst6 xclip fonts-dejavu-core fonts-noto-cjk
 cargo build --locked
 python3 scripts/smoke_gui.py
 python3 scripts/smoke_storage.py
@@ -36,7 +36,7 @@ python3 scripts/smoke_storage.py
 
 The workflow is configured; a job passing must be established from its completed run for the tested commit. Follow [Opterm's Actions runs](https://github.com/PopBot/opterm/actions/workflows/native-checks.yml). A native build/test pass proves the exercised code paths on that runner, not a complete desktop acceptance pass.
 
-Linux X11 desktop checks are automated. macOS/Windows desktop window behavior, native clipboard, folder pickers, IME composition, accessibility, mixed-DPI/monitor positioning, emoji rendering and authenticated interactive agents still need focused testing on their native desktops. Linux Wayland display-server behavior requires its own compositor/runtime check. Installing CJK outline fallback fonts improves available glyph coverage; it is not universal shaping or color-emoji support.
+Linux X11 desktop checks are automated. macOS/Windows desktop window behavior, native clipboard, folder pickers, IME composition, accessibility, mixed-DPI/monitor positioning, emoji rendering and authenticated interactive agents still need focused testing on their native desktops. Focused native Wayland rendering, keyboard input, layout saving and crash continuity now pass in a private nested compositor; see the [desktop results](platform-native-checks.md). Installing CJK outline fallback fonts improves available glyph coverage; it is not universal shaping or color-emoji support.
 
 For a manual desktop pass, start `cargo run --locked`, create two windows with renamed tabs and nested splits, type non-ASCII text, use native copy/paste, change a launch profile/theme, stage a storage folder, and close/reopen the desktop. Verify preserved shell state/PIDs and layout, then exercise settings recovery with the original files retained. Shut down the isolated test service only after its test work is finished. Keep these results separate from automated PTY/transport tests and from future speed measurements.
 
@@ -44,6 +44,10 @@ For a manual desktop pass, start `cargo run --locked`, create two windows with r
 
 Installed CJK outline fonts are now registered as a terminal fallback; a glyph test verifies the loaded face when present. Native IME is enabled at the controlled terminal cursor, with a bounded local preedit preview. Only a final UTF-8 commit becomes PTY input; cancelled compositions do not follow focus into another shell. Unit coverage checks these rules, while actual OS input-method acceptance remains pending.
 
-A private native Wayland run exposed a context-lock deadlock when saving window geometry: unlike X11, Wayland omits absolute native window coordinates. The viewport fallback is now read before entering the context's input lock. Native checks must verify the fix before declaring Wayland coverage.
+A private native Wayland run exposed a context-lock deadlock when saving window geometry: unlike X11, Wayland omits absolute native window coordinates. The viewport fallback is now read before entering the context's input lock. The focused native check verifies layout creation and preserved shell state after the fix.
 
 The initial native matrix also exposed Rust 1.99's deprecation of the old atomic queue reservation API. A portable compare-exchange loop retains the queue bound and supports both the local compiler and the hosted stable compiler.
+
+macOS native tests exposed accepted sockets inheriting the nonblocking listener flag. Accepted peer streams now explicitly block between framed requests, with an idle-after-Hello regression check.
+
+The first Windows run passed ConPTY resize/colors/Unicode and named-pipe reattachment, but failed Ctrl+C interruption. The correction clears an inherited ignore flag where a console is attached and removes the unnecessary new-process-group flag from detached service launch. Microsoft documents the behavior in [process creation flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags) and [SetConsoleCtrlHandler](https://learn.microsoft.com/en-us/windows/console/setconsolectrlhandler). The native test requires the foreground command's interruption marker rather than assuming PowerShell must exit. This correction needs a passing rerun before being treated as verified.
