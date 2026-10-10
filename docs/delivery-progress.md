@@ -7,7 +7,7 @@ The user authorized completing the remaining phases in order, committing and pus
 | 1 | Terminal input compatibility and editable shortcuts | Complete; 38 Rust tests, strict Clippy and native X11 checks passed |
 | 2 | Tab reorder, tab movement between windows, drag-out, scrollback search | Complete; 47 Rust tests, strict Clippy and focused native controls checks passed |
 | 3 | Custom settings/cache location and bounded saved-output controls | Complete; 60 Rust tests, strict Clippy and native storage checks passed |
-| 4 | Native platform checks and demonstrated fixes | Not started; unavailable platforms must remain unverified |
+| 4 | Native platform checks and demonstrated fixes | In progress: native matrix and focused Linux/Wayland validation |
 | 5 | Reproducible performance measurement, measured optimization, packaging | Not started |
 
 ## Phase 1

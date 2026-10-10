@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ime;
 mod input;
 mod profiles_ui;
 mod settings_ui;
@@ -159,6 +160,7 @@ struct App {
     ui_input_consumed: bool,
     destinations: Vec<layouts::Window>,
     window_poll: Instant,
+    ime: ime::Composition,
 }
 
 fn install_font(ctx: &egui::Context, database: &fontdb::Database, family: &str) -> bool {
@@ -172,6 +174,19 @@ fn install_font(ctx: &egui::Context, database: &fontdb::Database, family: &str) 
         "DejaVu Sans Mono"
     };
     let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "terminal-emoji".into(),
+        egui::FontData::from_static(include_bytes!("../assets/fonts/NotoEmoji-wght.ttf")).into(),
+    );
+    let mono = fonts
+        .families
+        .get_mut(&egui::FontFamily::Monospace)
+        .unwrap();
+    let position = mono
+        .iter()
+        .position(|name| name == "NotoEmoji-Regular")
+        .unwrap_or(mono.len());
+    mono.insert(position, "terminal-emoji".into());
     let primary = database.query(&fontdb::Query {
         families: &[fontdb::Family::Name(preferred), fontdb::Family::Monospace],
         ..fontdb::Query::default()
@@ -261,6 +276,10 @@ impl App {
         style.visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
         style.visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
         cc.egui_ctx.set_style(style);
+        cc.egui_ctx
+            .send_viewport_cmd(egui::ViewportCommand::IMEPurpose(
+                egui::IMEPurpose::Terminal,
+            ));
         let mut app = Self {
             tabs: Vec::new(),
             client: None,
@@ -293,6 +312,7 @@ impl App {
             ui_input_consumed: false,
             destinations: Vec::new(),
             window_poll: Instant::now(),
+            ime: ime::Composition::default(),
             settings_dialog: None,
             settings_poll: Instant::now(),
             settings,
@@ -473,11 +493,14 @@ impl App {
                 layout: self.capture_node(&tab.layout, instance),
             })
             .collect();
+        // Wayland does not supply an absolute native inner rectangle. Read the
+        // fallback outside input(), which already holds the context lock.
+        let fallback_rect = ctx.viewport_rect();
         ctx.input(|input| {
             let viewport = input.viewport();
             window.maximized = viewport.maximized.unwrap_or(false);
             if !window.maximized && !viewport.minimized.unwrap_or(false) {
-                let rect = viewport.inner_rect.unwrap_or_else(|| ctx.viewport_rect());
+                let rect = viewport.inner_rect.unwrap_or(fallback_rect);
                 window.size = [
                     rect.width().clamp(320.0, 16384.0),
                     rect.height().clamp(160.0, 16384.0),
@@ -1422,6 +1445,29 @@ impl App {
         {
             let pos = rect.min + Vec2::new(col as f32 * width, row as f32 * height);
             let cursor_rect = Rect::from_min_size(pos, Vec2::new(width, height));
+            if session.controlled()
+                && self.search.is_none()
+                && self.settings_dialog.is_none()
+                && self.rename.is_none()
+                && self.end_session.is_none()
+                && self.error.is_none()
+                && !egui::Popup::is_any_open(ctx)
+                && self.outgoing.is_none()
+            {
+                ctx.output_mut(|output| {
+                    output.ime = Some(egui::output::IMEOutput { rect, cursor_rect })
+                });
+                if let Some(text) = self.ime.text(id) {
+                    let galley = painter.layout_no_wrap(text.into(), font.clone(), cursor_color);
+                    let preview = Rect::from_min_size(pos, galley.size());
+                    painter.rect_filled(preview, 0, bg);
+                    painter.galley(pos, galley, cursor_color);
+                    painter.line_segment(
+                        [preview.left_bottom(), preview.right_bottom()],
+                        (1.0, cursor_color),
+                    );
+                }
+            }
             match appearance.cursor {
                 Cursor::Outline => {
                     painter.rect_stroke(
@@ -1923,6 +1969,23 @@ impl App {
     }
 
     fn events(&mut self, ctx: &egui::Context) {
+        let focus = self
+            .focused_session()
+            .filter(|session| session.controlled())
+            .map(|session| session.id);
+        self.ime.clear_other_session(
+            if ctx.input(|i| i.focused)
+                && self.search.is_none()
+                && self.settings_dialog.is_none()
+                && self.rename.is_none()
+                && self.error.is_none()
+                && self.end_session.is_none()
+            {
+                focus
+            } else {
+                None
+            },
+        );
         if self.ui_input_consumed {
             return;
         }
@@ -1952,6 +2015,7 @@ impl App {
         let mut pending = None;
         let mut shortcut_text = false;
         let events = ctx.input(|i| i.events.clone());
+        let mut composition_frame = focus.is_some_and(|id| self.ime.is_composing(id));
         let modifiers = ctx.input(|i| i.modifiers);
         for (index, event) in events.iter().cloned().enumerate() {
             let boundary = matches!(
@@ -1977,7 +2041,13 @@ impl App {
                 && let Some(tab) = self.tabs.get_mut(self.active)
             {
                 tab.focused = *id;
+                self.ime.clear_other_session(Some(*id));
                 ctx.request_repaint();
+            }
+
+            if composition_frame && matches!(&event, egui::Event::Key { .. } | egui::Event::Text(_))
+            {
+                continue;
             }
 
             if matches!(&event, egui::Event::Key { pressed: true, .. }) {
@@ -2125,8 +2195,14 @@ impl App {
                             queue_input(&mut pending, &client, session.id, text.as_bytes())
                         }
                     }
-                    egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
-                        queue_input(&mut pending, &client, session.id, text.as_bytes())
+                    egui::Event::Ime(event) => {
+                        if let Some(bytes) = self.ime.handle(session.id, &event) {
+                            composition_frame = true;
+                            queue_input(&mut pending, &client, session.id, &bytes)
+                        } else {
+                            composition_frame |= self.ime.is_composing(session.id);
+                            Ok(())
+                        }
                     }
                     egui::Event::Cut => {
                         let modifiers =
@@ -2457,6 +2533,14 @@ fn main() {
 #[cfg(test)]
 mod font_tests {
     use super::*;
+    #[test]
+    fn terminal_has_modern_outline_emoji_without_system_fonts() {
+        let ctx = egui::Context::default();
+        install_font(&ctx, &fontdb::Database::new(), "System monospace");
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            ctx.fonts_mut(|fonts| assert!(fonts.has_glyphs(&FontId::monospace(14.0), "🙂👩💻🦀")));
+        });
+    }
     #[test]
     fn installed_cjk_fallback_supplies_terminal_glyphs() {
         let mut database = fontdb::Database::new();

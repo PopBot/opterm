@@ -50,7 +50,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             build-essential pkg-config libx11-dev libxi-dev libxcursor-dev \
             libxrandr-dev libxinerama-dev libgl1-mesa-dev libwayland-dev \
-            libxkbcommon-dev xvfb x11-apps libxtst6 xclip fonts-dejavu-core fonts-noto-cjk
+            libxkbcommon-dev weston xvfb x11-apps libxtst6 xclip fonts-dejavu-core fonts-noto-cjk
       - name: Install stable Rust and check tools
         id: rust
         run: |
@@ -60,7 +60,8 @@ jobs:
           cargo --version
           echo "version=$(rustc --version | tr ' ' '-')" >> "$GITHUB_OUTPUT"
       - name: Reuse Rust dependencies and build artifacts
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry/index
@@ -85,3 +86,19 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 3
         run: python3 scripts/smoke_storage.py
+      - name: Linux native Wayland rendering and continuity checks
+        if: runner.os == 'Linux'
+        timeout-minutes: 3
+        run: python3 scripts/smoke_wayland.py
+      - name: Preserve compiled dependencies even when checks fail
+        if: ${{ always() && !cancelled() && steps.rust.outcome == 'success' && steps.cache.outcome == 'success' && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target/debug
+          key: ${{ steps.cache.outputs.cache-primary-key }}

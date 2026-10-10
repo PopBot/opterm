@@ -302,15 +302,24 @@ impl Client {
             Request::Search { query, .. } => query.len() + 128,
             _ => 512,
         };
-        ensure!(
-            self.queued
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| (current
-                    + weight
-                    <= 1024 * 1024)
-                    .then_some(current + weight))
-                .is_ok(),
-            "Terminal input queue is full. Input was not queued."
-        );
+        // Keep this bounded reservation compatible with Rust versions before
+        // Atomic::try_update, without using its now-deprecated predecessor.
+        let mut current = self.queued.load(Ordering::Relaxed);
+        loop {
+            ensure!(
+                current.saturating_add(weight) <= 1024 * 1024,
+                "Terminal input queue is full. Input was not queued."
+            );
+            match self.queued.compare_exchange_weak(
+                current,
+                current + weight,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
         if let Err(error) = self.sender.try_send((request, weight)) {
             self.queued.fetch_sub(weight, Ordering::Relaxed);
             bail!("Terminal request was not queued: {error}");
