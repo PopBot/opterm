@@ -45,7 +45,13 @@ These are actual captures of the running Linux X11 prototype, not design mockups
 
 ## Operating guide
 
-Read the [user guide](docs/user-guide.md) for everyday operation: opening tabs and splits, running agents, keeping sessions alive, profiles/themes, shortcuts, settings recovery, saved layouts, and troubleshooting. Check [delivery progress](docs/delivery-progress.md) for features still being completed and validated.
+Read the [user guide](docs/user-guide.md) for everyday operation: opening tabs and splits, running agents, keeping sessions alive, profiles/themes, shortcuts, settings recovery, saved layouts, and troubleshooting. Check [delivery progress](docs/delivery-progress.md) for completed prototype phases and remaining acceptance limits.
+
+## Measurements and downloads
+
+The remaining prototype phases are tracked in [delivery progress](docs/delivery-progress.md). Read the [measured performance report](docs/performance.md) and [native validation](docs/platform-validation.md) for evidence and limitations. A measured title-update fix removes continuous idle redraws; recording now uses its full bounded byte capacity even for small output fragments. These results do not establish the fastest terminal or faster execution of hosted programs.
+
+[Unsigned native archives](docs/distribution.md) are built for Linux x64, both Mac architectures and Windows x64 through GitHub Actions. They include runtime documentation, checksums and dependency/font licenses. Polished installers, signing and updates remain deferred.
 
 ## Run locally
 

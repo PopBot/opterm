@@ -4,7 +4,7 @@
 
 ## Active terminal-first prototype sequence
 
-The design interview is closed with Q54-Q83 accepted. No further product decision round is required before a prototype. This sequence supersedes the backend-first implementation order retained below as history; the working-terminal, live-session continuity, and split/window slices are implemented as recorded in [prototype status](prototype-status.md), while the remaining terminal controls, saved state, and native validation are ahead.
+The design interview is closed with Q54-Q83 accepted. No further product decision round is required before a prototype. This sequence supersedes the backend-first implementation order retained below as history; the working-terminal, live-session continuity, and split/window slices are implemented as recorded in [prototype status](prototype-status.md), with everyday controls and bounded saved state complete. Native build/PTY checks and focused Linux desktop checks now pass; measured results and archive delivery are tracked in [delivery progress](delivery-progress.md).
 
 1. **A working terminal view.** Establish the Rust project and a bounded evaluation of the existing PTY/VT and UI candidates. Render a real shell in the accepted thin layout; verify typing, resize, copy/paste, and a CLI agent. Choose the toolkit using this working slice and native feasibility, without claiming speed superiority.
 2. **Built-in session continuity.** Add the independent session service, detach/reattach, and a compact session picker. Demonstrate that closing or crashing the desktop leaves service-owned work running; never replay commands after reboot or service failure.

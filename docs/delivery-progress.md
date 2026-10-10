@@ -8,7 +8,7 @@ The user authorized completing the remaining phases in order, committing and pus
 | 2 | Tab reorder, tab movement between windows, drag-out, scrollback search | Complete; 47 Rust tests, strict Clippy and focused native controls checks passed |
 | 3 | Custom settings/cache location and bounded saved-output controls | Complete; 60 Rust tests, strict Clippy and native storage checks passed |
 | 4 | Native platform checks and demonstrated fixes | Complete; native Linux, both Mac architectures and Windows checks passed |
-| 5 | Reproducible performance measurement, measured optimization, packaging | In progress; matched local measurements and native archive builds |
+| 5 | Reproducible performance measurement, measured optimization, packaging | Complete; reproducible reports, measured fixes and four native archives verified |
 
 ## Phase 1
 
@@ -37,3 +37,13 @@ The focused native check (`python3 scripts/smoke_storage.py`) passes recording S
 [Native run 38030855922](https://github.com/PopBot/opterm/actions/runs/38030855922) passed all four jobs for `b30d074`: Linux x64, macOS Apple Silicon, macOS Intel and Windows x64. Unix jobs execute 71 tests with two optional fixtures explicitly ignored; Windows executes 47 applicable tests. Formatting and strict Clippy passed. Linux additionally passes full X11 desktop/storage checks and native nested Wayland rendering, input, layout saving and crash continuity.
 
 Demonstrated fixes include accepted BSD socket blocking mode, Windows inherited Ctrl+C state, native IME cursor/preedit handling, modern monochrome emoji and installed CJK fallback, and a Wayland geometry lock deadlock. Portable byte/readiness/path fixtures preserve their exact behavior checks. Actual macOS/Windows desktop controls, OS input methods, accessibility, color/joined emoji and physical mixed-DPI monitor acceptance remain documented gaps, not claims of certification. See [native validation](platform-validation.md) and [focused desktop results](platform-native-checks.md).
+
+## Phase 5
+
+Reproducible [desktop](performance-desktop.md) and [service](performance-service.md) benchmarks retain raw samples, exact binary hashes, environment details and boundaries. Local observations include 281-ms fresh visible output, 155-ms visible reconnect, 7.27-ms headless reconnect and 2.78-ms parsed input reply medians. Small samples and unequal baseline features are stated explicitly. The measured title-cache fix removes continuous repaint, reducing idle software-rendered desktop CPU by about 96% in the bounded observation, without a demonstrated startup win.
+
+The recording stress matrix exposed premature message-slot exhaustion. A fixed one-MiB byte ring with one wake token and maximum 512-KiB writer batches now captures all expected bytes at 1/8/32/100 sessions without gaps. Its blocked-disk fragmented-output regression preserves exact bytes. Formatting, strict Clippy and all-target tests passed (72 Unix tests, two optional fixtures ignored; 48 applicable Windows tests). Existing and extracted release desktop checks retain original shell PIDs and layout controls.
+
+[Native run 38031780232](https://github.com/PopBot/opterm/actions/runs/38031780232) passed four native check jobs and four optimized archive jobs. Linux tar.gz, Apple Silicon/Intel macOS .app archives and Windows ZIP include checksums, runtime docs, project/dependency/font legal notices and source/binary provenance. The Linux extracted release controls check passes. [Download/build instructions](distribution.md) identify these unsigned prototype artifacts.
+
+All five ordered delivery phases are complete for the prototype. [Performance and initial regression guide](performance.md) records the retained stack and resource boundaries. This does not certify the fastest terminal, complete physical Mac/Windows desktop acceptance, OS input methods/accessibility, production OS minimums, authenticated agent behavior or signed installers/updaters. No deferred backend ledger/database/public execution interfaces or command replay were added.

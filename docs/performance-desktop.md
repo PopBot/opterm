@@ -8,6 +8,8 @@ An idle terminal continuously repainted because `terminal()` sent the unchanged 
 
 In one five-second idle sample per build, desktop CPU fell from **859.79% to 34.80% of one core** (about 96% lower); RSS remained **161.45 → 161.42 MiB**. CPU above 100% means work across several cores, including software-renderer threads. The service measured **0.60 → 0.80%** CPU and **10.43 → 8.59 MiB** RSS; the fixture shell used 0% CPU and 1.82 MiB RSS. RSS includes shared mappings and is not exclusive physical memory. This short observation demonstrates removal of the repaint loop; it does not establish a production CPU budget. Periodic polling still redraws an idle window.
 
+The extracted optimized release also passed `scripts/smoke_gui.py --controls-only`: literal search/navigation, tab rename/reorder, split metadata and transfers to new/existing windows retained the original shell PIDs and exactly four shells.
+
 Startup did not improve measurably. Five repetitions per scenario gave these medians and full observed ranges:
 
 | Scenario | Baseline median (range), ms | Title cache median (range), ms |
@@ -39,4 +41,4 @@ Each fresh repetition has a fresh Opterm service and private directories. Reconn
 
 Installed GNOME Terminal 3.52.0 / VTE 0.76.0 ran the same shell fixture on the same private display, in five fresh D-Bus/server launches. Shell-ready median was **424.21 ms (382.17–498.26)**; visible-output median was **435.51 ms (393.14–509.02)**. This is a fresh-server reference only: everyday GNOME Terminal may reuse a running server and bus. Opterm and GNOME Terminal also use different renderer/font defaults, window sizing and persistence features. This result does not show that Opterm is generally faster than GNOME Terminal, the native macOS terminal, or Windows Terminal. The raw native resource entry contains only a partial launcher/bus process tree and is explicitly unsuitable for CPU/RSS comparison.
 
-Remaining measurements include real GPU rendering, steady-state output throughput and latency, larger restored layouts, repeated memory/CPU samples, long-running agent workloads, and native macOS/Windows launch comparisons. [Service measurements](performance.md) separately cover service concurrency and output/control behavior. Native platform limitations remain in [platform-native-checks.md](platform-native-checks.md).
+Remaining measurements include real GPU rendering, steady-state output throughput and latency, larger restored layouts, repeated memory/CPU samples, long-running agent workloads, and native macOS/Windows launch comparisons. [Service measurements](performance-service.md) separately cover service concurrency and output/control behavior. Native platform limitations remain in [platform-native-checks.md](platform-native-checks.md).

@@ -9,6 +9,17 @@ Opterm packages are native builds, not installers. Download the archive and chec
 | macOS Intel | `opterm-0.1.0-macos-x86_64.tar.gz` | Open `Opterm.app`, or run its executable |
 | Windows x86_64 | `opterm-0.1.0-windows-x86_64.zip` | Run `opterm.exe` inside the extracted folder |
 
+## Verified native archives
+
+[Run 38031780232](https://github.com/PopBot/opterm/actions/runs/38031780232) passed all four native check jobs and all four release packaging jobs for `1db391c`. The Linux release archive additionally passed an extracted native controls/session-preservation check. Download the corresponding Actions artifact:
+
+- [Linux x86_64](https://github.com/PopBot/opterm/actions/runs/38031780232/artifacts/11663140371)
+- [macOS Apple Silicon](https://github.com/PopBot/opterm/actions/runs/38031780232/artifacts/11662181636)
+- [macOS Intel](https://github.com/PopBot/opterm/actions/runs/38031780232/artifacts/11662636090)
+- [Windows x86_64](https://github.com/PopBot/opterm/actions/runs/38031780232/artifacts/11663145439)
+
+These artifacts identify their source revision and binary digest in `BUILD.json`. This validates native construction and exercised test paths; Mac/Windows physical desktop controls remain outside this run.
+
 The macOS app is unsigned and not notarized. Gatekeeper may require approval through **System Settings → Privacy & Security** after the first attempted launch. Windows may show a reputation warning for the unsigned executable. Use packages only from the repository's verified workflow run; signing and automatic updates are deferred. Hosted native build/tests do not establish full macOS/Windows desktop acceptance.
 
 Linux packages are built on Ubuntu 24.04 and require its compatible C runtime and desktop libraries, including X11/Wayland, OpenGL, xkbcommon and xkbcommon-x11. They are not static builds for every Linux distribution. Install fonts for CJK coverage where needed; bundled emoji are monochrome. Windows requires Windows 10 version 1809 or later for ConPTY. See `USER-GUIDE.md` for settings, profiles, session persistence and limitations.

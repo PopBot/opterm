@@ -243,10 +243,11 @@ def output(binary, repeats, lines):
 
 def concurrency(binary, count, recording):
     with Service(binary, recording) as service:
-        sessions, launch = [], []
+        sessions, launch, ready_bytes = [], [], 0
         for _ in range(count):
             started = time.perf_counter()
-            identifier, _ = service.create()
+            identifier, ready = service.create()
+            ready_bytes += len(re.search(r'READY_PID:\d+', screen_text(ready)).group()) + 3
             sessions.append(identifier)
             launch.append(elapsed(started))
         idle_before = resources(service.process.pid)
@@ -258,16 +259,21 @@ def concurrency(binary, count, recording):
         lines = 2048  # 182 KiB/session;100 stress remains under19 MiB of output.
         for identifier in sessions:
             service.write(identifier, f'out:{lines}:stress{identifier}\r')
-        peak = idle_after
         errors = []
         for identifier in sessions:
             final = service.wait(identifier, f'OUTPUT_DONE:stress{identifier}')
             errors.append(final['info'].get('history_error'))
-            current = resources(service.process.pid)
-            if current['service']['rss_bytes'] > peak['service']['rss_bytes']:
-                peak = current
         duration_ms = elapsed(started)
         loaded = resources(service.process.pid)
+        # Linux's default ONLCR expands the fixture's CRLF to CRCRLF in the PTY.
+        expected_saved_bytes = ready_bytes + count * lines * 92 + sum(
+            7 + len(f'OUTPUT_DONE:stress{identifier}') + 3 for identifier in sessions)
+        if recording:
+            deadline = time.perf_counter() + 3
+            while saved_bytes(service.directory) < expected_saved_bytes and time.perf_counter() < deadline:
+                time.sleep(.01)
+            errors = [service.peer.call({'View': dict(id=identifier, since=None)})['Snapshot']['info'].get('history_error')
+                      for identifier in sessions]
         assert len(service.peer.call('List')['List']) == count
         idle_cpu = {key: (idle_after[key]['cpu_s'] - idle_before[key]['cpu_s']) / idle_seconds * 100
                     for key in ('service', 'hosted')}
@@ -275,10 +281,11 @@ def concurrency(binary, count, recording):
                       for key in ('service', 'hosted')}
         return dict(sessions=count, recording=recording, sequential_launch=distribution(launch),
                     idle=idle_after, idle_cpu_percent=idle_cpu, loaded=loaded,
-                    sampled_peak=peak, output_ms=duration_ms, payload_bytes=count * lines * 91,
+                    output_ms=duration_ms, payload_bytes=count * lines * 91,
                     throughput_mib_s=count * lines * 91 / 1048576 / (duration_ms / 1000),
                     loaded_cpu_s=loaded_cpu, history_errors=errors,
-                    recorded_bytes=saved_bytes(service.directory))
+                    recorded_bytes=saved_bytes(service.directory), expected_saved_bytes=expected_saved_bytes,
+                    recording_complete=saved_bytes(service.directory) == expected_saved_bytes if recording else None)
 
 
 def main():
@@ -301,6 +308,7 @@ def main():
                   history_options=OPTIONS, polling_sleep_s=.0005,
                   cpu=Path('/proc/cpuinfo').read_text().split('model name\t: ')[1].splitlines()[0],
                   memory_total_kib=int(Path('/proc/meminfo').read_text().split('MemTotal:')[1].split()[0]))
+    result['resource_sampling'] = 'Idle and after output completion;outside timed workload interval;RSS not peak/PSS'
     print('Latency', flush=True)
     result['latency'] = latency(binary, args.repeats)
     print('Output recording off/on and matched direct pipe', flush=True)

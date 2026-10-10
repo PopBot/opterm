@@ -1403,5 +1403,10 @@
       ],
       "recorded_bytes": 16109337
     }
+  ],
+  "measurement_limitations": [
+    "Hosted process resources were undercounted by the initial single-thread children collector;do not use those hosted resource fields.",
+    "Concurrency interval included repeated procfs sampling;do not compare its throughput/walltime with corrected final harness.",
+    "Initial stress recording bytes sampled without an explicit final asynchronous flush wait;gap counters are valid but complete-durability comparison is unavailable."
   ]
 }

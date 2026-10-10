@@ -165,6 +165,7 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 3
         run: |
+          (cd target/dist && sha256sum -c *.sha256)
           mkdir target/package-check
           tar -xzf target/dist/opterm-*-linux-x86_64.tar.gz -C target/package-check
           python3 scripts/smoke_gui.py --controls-only "$(find "$PWD/target/package-check" -type f -name opterm)"
