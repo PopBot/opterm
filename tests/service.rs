@@ -106,7 +106,8 @@ fn shell(connection: &mut Connection) -> u64 {
     )
     .info
     .id;
-    write(connection, id, "stty -echo; printf 'READY\\n'\n");
+    // Readiness must come from execution, never the terminal's initial echo.
+    write(connection, id, "stty -echo; printf 'REA%s\\n' DY\n");
     wait_screen(connection, id, "READY");
     id
 }
@@ -378,12 +379,16 @@ fn configured_profiles_capture_launch_and_live_themes_preserve_program_colors() 
     write(
         &mut connection,
         id,
-        "stty -echo; printf '%s|%s|%s' $$ \"$PWD\" \"$PROFILE_VALUE\" > captured; printf 'READY\\n'\n",
+        "stty -echo; printf '%s|%s|%s' $$ \"$PWD\" \"$PROFILE_VALUE\" > captured; printf 'REA%s\\n' DY\n",
     );
     wait_screen(&mut connection, id, "READY");
     let captured = std::fs::read_to_string(service.directory.path().join("captured")).unwrap();
     assert!(captured.ends_with("|one value with spaces"));
-    assert!(captured.contains(&service.directory.path().display().to_string()));
+    let directory = captured.split('|').nth(1).unwrap();
+    assert_eq!(
+        std::fs::canonicalize(directory).unwrap(),
+        std::fs::canonicalize(service.directory.path()).unwrap()
+    );
     write(
         &mut connection,
         id,
