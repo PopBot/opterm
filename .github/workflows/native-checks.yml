@@ -1,0 +1,87 @@
+name: Native checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  RUST_BACKTRACE: '1'
+
+jobs:
+  native:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            label: Linux x64 / X11
+          - runner: macos-15
+            label: macOS Apple Silicon
+          - runner: macos-15-intel
+            label: macOS Intel
+          - runner: windows-2025
+            label: Windows x64 / ConPTY
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Linux build and native GUI prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential pkg-config libx11-dev libxi-dev libxcursor-dev \
+            libxrandr-dev libxinerama-dev libgl1-mesa-dev libwayland-dev \
+            libxkbcommon-dev xvfb x11-apps libxtst6 xclip fonts-dejavu-core fonts-noto-cjk
+      - name: Install stable Rust and check tools
+        id: rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+          rustc --version
+          cargo --version
+          echo "version=$(rustc --version | tr ' ' '-')" >> "$GITHUB_OUTPUT"
+      - name: Reuse Rust dependencies and build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target/debug
+          key: native-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Strict Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Native unit and integration tests
+        run: cargo test --locked --all-targets
+      - name: Build desktop for native GUI checks
+        if: runner.os == 'Linux'
+        run: cargo build --locked
+      - name: Linux native terminal, settings and layout checks
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        run: python3 scripts/smoke_gui.py
+      - name: Linux native storage and recording checks
+        if: runner.os == 'Linux'
+        timeout-minutes: 3
+        run: python3 scripts/smoke_storage.py
