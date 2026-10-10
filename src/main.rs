@@ -161,6 +161,7 @@ struct App {
     destinations: Vec<layouts::Window>,
     window_poll: Instant,
     ime: ime::Composition,
+    window_title: String,
 }
 
 fn install_font(ctx: &egui::Context, database: &fontdb::Database, family: &str) -> bool {
@@ -313,6 +314,7 @@ impl App {
             destinations: Vec::new(),
             window_poll: Instant::now(),
             ime: ime::Composition::default(),
+            window_title: String::new(),
             settings_dialog: None,
             settings_poll: Instant::now(),
             settings,
@@ -1324,7 +1326,14 @@ impl App {
             } else {
                 &automatic
             });
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("Opterm — {title}")));
+            let title = format!("Opterm — {title}");
+            if title != self.window_title {
+                // Viewport commands request another frame, even when the title
+                // is unchanged. Sending this every frame keeps an idle terminal
+                // continuously rendering.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+                self.window_title = title;
+            }
         }
     }
     fn paint_pane(

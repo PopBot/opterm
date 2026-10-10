@@ -1,0 +1,321 @@
+[
+  {
+    "packages": [
+      {
+        "name": "block2",
+        "version": "0.5.1"
+      },
+      {
+        "name": "objc-sys",
+        "version": "0.3.5"
+      }
+    ],
+    "directory": "assets/licenses/madsmtm-objc2-4fc083f1c6d6",
+    "sources": [
+      "https://raw.githubusercontent.com/madsmtm/objc2/4fc083f1c6d6784577e38b0ee8dbd344481e2fd2/LICENSE.txt"
+    ]
+  },
+  {
+    "packages": [
+      {
+        "name": "clipboard-win",
+        "version": "5.4.1"
+      }
+    ],
+    "directory": "assets/licenses/DoumanAsh-clipboard-win-3b27cf2bfd1a",
+    "sources": [
+      "https://raw.githubusercontent.com/DoumanAsh/clipboard-win/3b27cf2bfd1adcfa6e0264eb51c1025ddaf0f342/LICENSE"
+    ]
+  },
+  {
+    "packages": [
+      {
+        "name": "dispatch2",
+        "version": "0.3.1"
+      }
+    ],
+    "directory": "assets/licenses/madsmtm-objc2-8852b424193c",
+    "sources": [
+      "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md"
+    ]
+  },
+  {
+    "packages": [
+      {
+        "name": "ecolor",
+        "version": "0.33.3"
+      },
+      {
+        "name": "eframe",
+        "version": "0.33.3"
+      },
+      {
+        "name": "egui",
+        "version": "0.33.3"
+      },
+      {
+        "name": "egui-wgpu",
+        "version": "0.33.3"
+      },
+      {
+        "name": "egui-winit",
+        "version": "0.33.3"
+      },
+      {
+        "name": "egui_glow",
+        "version": "0.33.3"
+      },
+      {
+        "name": "emath",
+        "version": "0.33.3"
+      },
+      {
+        "name": "epaint",
+        "version": "0.33.3"
+      },
+      {
+        "name": "epaint_default_fonts",
+        "version": "0.33.3"
+      }
+    ],
+    "directory": "assets/licenses/emilk-egui-44cdd653e231",
+    "sources": [
+      "https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/emilk/egui/44cdd653e2317d300fb8a6c9c36b03f23991e803/LICENSE-MIT"
+    ]
+  },
+  {
+    "packages": [
+      {
+        "name": "gl_generator",
+        "version": "0.14.0"
+      }
+    ],
+    "directory": "assets/licenses/brendanzab-gl-rs-ea503e8d5fb6",
+    "sources": [
+      "https://raw.githubusercontent.com/brendanzab/gl-rs/ea503e8d5fb6d73c6030e6191ce738cd3bf3433e/LICENSE"
+    ]
+  },
+  {
+    "packages": [
+      {
+        "name": "jni",
+        "version": "0.22.4"
+      }
+    ],
+    "directory": "assets/licenses/jni-rs-jni-rs-5ae9458a4ec4",
+    "sources": [
+      "https://raw.githubusercontent.com/jni-rs/jni-rs/5ae9458a4ec44c5318f37ddc7569c1d4ae8a69e7/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/jni-rs/jni-rs/5ae9458a4ec44c5318f37ddc7569c1d4ae8a69e7/LICENSE-MIT"
+    ]
+  },
+  {
+    "packages": [
+      {
+        "name": "jni-macros",
+        "version": "0.22.4"
+      }
+    ],
+    "directory": "assets/licenses/jni-rs-jni-rs-33045a124105",
+    "sources": [
+      "https://raw.githubusercontent.com/jni-rs/jni-rs/33045a124105c939d1e2cbdcb5a39e5d868ffa03/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/jni-rs/jni-rs/33045a124105c939d1e2cbdcb5a39e5d868ffa03/LICENSE-MIT"
+    ]
+  },
+  {
+    "packages": [
+      {
+        "name": "jni-sys-macros",
+        "version": "0.4.1"
+      }
+    ],
+    "directory": "assets/licenses/jni-rs-jni-sys-64d77b7a5f11",
+    "sources": [
+      "https://raw.githubusercontent.com/jni-rs/jni-sys/64d77b7a5f119d7b55b4e2c169a4668067ff59e6/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/jni-rs/jni-sys/64d77b7a5f119d7b55b4e2c169a4668067ff59e6/LICENSE-MIT"
+    ]
+  },
+  {
+    "packages": [
+      {
+        "name": "khronos_api",
+        "version": "3.1.0"
+      }
+    ],
+    "directory": "assets/licenses/brendanzab-gl-rs-f150967b1c44",
+    "sources": [
+      "https://raw.githubusercontent.com/brendanzab/gl-rs/f150967b1c44ae888e6676f93f639ebc82771bdc/LICENSE"
+    ]
+  },
+  {
+    "packages": [
+      {
+        "name": "ndk",
+        "version": "0.9.0"
+      },
+      {
+        "name": "ndk-sys",
+        "version": "0.6.0+11769913"
+      }
+    ],
+    "directory": "assets/licenses/rust-mobile-ndk-49bbbba16c58",
+    "sources": [
+      "https://raw.githubusercontent.com/rust-mobile/ndk/49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/rust-mobile/ndk/49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25/LICENSE-MIT"
+    ]
+  },
+  {
+    "packages": [
+      {
+        "name": "ndk-context",
+        "version": "0.1.1"
+      }
+    ],
+    "directory": "assets/licenses/rust-windowing-android-ndk-rs-10f2ba388fca",
+    "sources": [
+      "https://raw.githubusercontent.com/rust-windowing/android-ndk-rs/10f2ba388fca20f7349996ebae26ccda7a6fda5c/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/rust-windowing/android-ndk-rs/10f2ba388fca20f7349996ebae26ccda7a6fda5c/LICENSE-MIT"
+    ]
+  },
+  {
+    "packages": [
+      {
+        "name": "objc2",
+        "version": "0.5.3"
+      }
+    ],
+    "directory": "assets/licenses/madsmtm-objc2-5237cbf081d0",
+    "sources": [
+      "https://raw.githubusercontent.com/madsmtm/objc2/5237cbf081d04ef75a1f6a207b4018e7c1ae7438/LICENSE.txt"
+    ]
+  },
+  {
+    "packages": [
+      {
+        "name": "objc2",
+        "version": "0.6.5"
+      }
+    ],
+    "directory": "assets/licenses/madsmtm-objc2-d7d2fa23ceaa",
+    "sources": [
+      "https://raw.githubusercontent.com/madsmtm/objc2/d7d2fa23ceaa5e6096c923b081040e5d81b3b9df/LICENSE.md"
+    ]
+  },
+  {
+    "packages": [
+      {
+        "name": "objc2-app-kit",
+        "version": "0.2.2"
+      },
+      {
+        "name": "objc2-cloud-kit",
+        "version": "0.2.2"
+      },
+      {
+        "name": "objc2-contacts",
+        "version": "0.2.2"
+      },
+      {
+        "name": "objc2-core-data",
+        "version": "0.2.2"
+      },
+      {
+        "name": "objc2-core-image",
+        "version": "0.2.2"
+      },
+      {
+        "name": "objc2-core-location",
+        "version": "0.2.2"
+      },
+      {
+        "name": "objc2-foundation",
+        "version": "0.2.2"
+      },
+      {
+        "name": "objc2-link-presentation",
+        "version": "0.2.2"
+      },
+      {
+        "name": "objc2-metal",
+        "version": "0.2.2"
+      },
+      {
+        "name": "objc2-quartz-core",
+        "version": "0.2.2"
+      },
+      {
+        "name": "objc2-symbols",
+        "version": "0.2.2"
+      },
+      {
+        "name": "objc2-ui-kit",
+        "version": "0.2.2"
+      },
+      {
+        "name": "objc2-uniform-type-identifiers",
+        "version": "0.2.2"
+      },
+      {
+        "name": "objc2-user-notifications",
+        "version": "0.2.2"
+      }
+    ],
+    "directory": "assets/licenses/madsmtm-objc2-e282618be4c3",
+    "sources": [
+      "https://raw.githubusercontent.com/madsmtm/objc2/e282618be4c3a3b9542957e0c8540e9588472ce8/LICENSE.txt"
+    ]
+  },
+  {
+    "packages": [
+      {
+        "name": "objc2-app-kit",
+        "version": "0.3.2"
+      },
+      {
+        "name": "objc2-core-foundation",
+        "version": "0.3.2"
+      },
+      {
+        "name": "objc2-core-graphics",
+        "version": "0.3.2"
+      },
+      {
+        "name": "objc2-foundation",
+        "version": "0.3.2"
+      },
+      {
+        "name": "objc2-io-surface",
+        "version": "0.3.2"
+      }
+    ],
+    "directory": "assets/licenses/madsmtm-objc2-7b1abfd750a2",
+    "sources": [
+      "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md"
+    ]
+  },
+  {
+    "packages": [
+      {
+        "name": "objc2-encode",
+        "version": "4.1.0"
+      }
+    ],
+    "directory": "assets/licenses/madsmtm-objc2-8d214f547736",
+    "sources": [
+      "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md"
+    ]
+  },
+  {
+    "packages": [
+      {
+        "name": "profiling",
+        "version": "1.0.18"
+      }
+    ],
+    "directory": "assets/licenses/aclysma-profiling-8271551172eb",
+    "sources": [
+      "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT"
+    ]
+  }
+]

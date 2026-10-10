@@ -1,0 +1,1407 @@
+{
+  "schema": 1,
+  "timestamp_utc": "2026-10-10T06:35:14Z",
+  "git_revision": "ae34f0143809dedb7d1b3abe65674bb1e607979c",
+  "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+  "python": "3.12.3",
+  "binary": "/home/jarod/Dev/extdev/projects/opterm/target/release/opterm",
+  "binary_sha256": "e1bce466c2d74d85f2b0d62dc9e045d744c0bfc83bc9ce696e3de5a1333dbde0",
+  "shell": "/bin/sh -c (no user startup files)",
+  "terminal": {
+    "columns": 100,
+    "rows": 32
+  },
+  "history_options": {
+    "enabled": false,
+    "retention_days": 30,
+    "total_mib": 5120,
+    "stream_mib": 256,
+    "scrollback_lines": 10000
+  },
+  "polling_sleep_s": 0.0005,
+  "cpu": "AMD Ryzen 7 2700X Eight-Core Processor",
+  "memory_total_kib": 65775876,
+  "latency": {
+    "service_transport_start": {
+      "n": 7,
+      "median_ms": 11.738549999790848,
+      "p95_ms": 12.949244000992621,
+      "min_ms": 1.7252329998882487,
+      "max_ms": 12.949244000992621,
+      "samples_ms": [
+        12.949244000992621,
+        12.887148999652709,
+        12.641500999961863,
+        11.738549999790848,
+        1.8334449996473268,
+        1.7252329998882487,
+        1.9365970001672395
+      ]
+    },
+    "new_pty_ready": {
+      "n": 7,
+      "median_ms": 3.555170000254293,
+      "p95_ms": 4.923378999592387,
+      "min_ms": 2.704667000216432,
+      "max_ms": 4.923378999592387,
+      "samples_ms": [
+        4.642695999791613,
+        3.73386299906997,
+        3.0821199998172233,
+        4.923378999592387,
+        2.704667000216432,
+        3.555170000254293,
+        3.2350950004911283
+      ]
+    },
+    "new_service_and_pty_ready": {
+      "n": 7,
+      "median_ms": 15.817905999938375,
+      "p95_ms": 17.66027700068662,
+      "min_ms": 4.596851000314928,
+      "max_ms": 17.66027700068662,
+      "samples_ms": [
+        17.66027700068662,
+        16.682196999681764,
+        15.817905999938375,
+        16.73006500095653,
+        4.596851000314928,
+        5.333092000000761,
+        5.233916999713983
+      ]
+    },
+    "reconnect_and_attach_snapshot": {
+      "n": 31,
+      "median_ms": 7.72789100119553,
+      "p95_ms": 9.135071999480715,
+      "min_ms": 5.626477999612689,
+      "max_ms": 9.221431999321794,
+      "samples_ms": [
+        6.62838400057808,
+        9.135071999480715,
+        8.014203998754965,
+        9.221431999321794,
+        8.270100999652641,
+        7.648744000107399,
+        7.357721999142086,
+        8.268528001281084,
+        8.273578001535498,
+        7.95268999900145,
+        6.742547000612831,
+        6.594369999220362,
+        8.00814200010791,
+        8.078554001258453,
+        8.672239000588888,
+        6.395559999873512,
+        7.106573999408283,
+        7.842895998692256,
+        7.794656001351541,
+        7.983658000739524,
+        7.094241000231705,
+        7.843285999115324,
+        8.071801999903983,
+        7.464160000381526,
+        7.72789100119553,
+        5.626477999612689,
+        6.224030001249048,
+        7.253306999700726,
+        7.406963999528671,
+        6.651767000221298,
+        6.644343000516528
+      ]
+    },
+    "input_to_parsed_snapshot": {
+      "n": 31,
+      "median_ms": 2.3424020000675227,
+      "p95_ms": 4.197958000077051,
+      "min_ms": 1.258624000911368,
+      "max_ms": 5.50932899932377,
+      "samples_ms": [
+        1.258624000911368,
+        1.780356000381289,
+        1.3967199993203394,
+        1.8639100017026067,
+        2.382616999966558,
+        2.3711060002824524,
+        1.9961870002589421,
+        1.919514999826788,
+        2.3424020000675227,
+        3.413577000173973,
+        2.919376998761436,
+        2.0305420002841856,
+        1.9844449998345226,
+        1.880182000604691,
+        3.726959999767132,
+        2.5794930006668437,
+        2.2388699999282835,
+        2.222508999693673,
+        2.298010000231443,
+        2.6789090006786864,
+        2.204004000304849,
+        2.158989998861216,
+        2.774597000097856,
+        2.8315229992585955,
+        4.197958000077051,
+        3.6301199997978983,
+        3.214586000467534,
+        2.0153530003881315,
+        3.322077000120771,
+        3.447981000135769,
+        5.50932899932377
+      ]
+    }
+  },
+  "output": {
+    "payload_lines": 32768,
+    "payload_bytes": 2981888,
+    "direct_program_cpu_s": 0.10521899999999997,
+    "direct_pipe_collect": {
+      "n": 7,
+      "median_ms": 14.88131199948839,
+      "p95_ms": 20.961325000826037,
+      "min_ms": 13.558028000261402,
+      "max_ms": 20.961325000826037,
+      "samples_ms": [
+        14.185545998770976,
+        14.88131199948839,
+        17.798374999983935,
+        14.652506000857102,
+        15.424103999976069,
+        20.961325000826037,
+        13.558028000261402
+      ]
+    },
+    "recording_off": {
+      "n": 7,
+      "median_ms": 118.15754800045397,
+      "p95_ms": 145.70687099876523,
+      "min_ms": 115.82864099909784,
+      "max_ms": 145.70687099876523,
+      "samples_ms": [
+        145.70687099876523,
+        126.31470799897215,
+        118.09247599921946,
+        115.82864099909784,
+        121.1678439995012,
+        116.55588499888836,
+        118.15754800045397
+      ],
+      "median_mib_s": 24.067442563966157,
+      "history_errors": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "recorded_bytes": 0,
+      "final_history_error": null,
+      "resource_before": {
+        "service": {
+          "cpu_s": 0.0,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 5767168,
+          "threads": 6
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "resource_after": {
+        "service": {
+          "cpu_s": 0.8,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 30711808,
+          "threads": 6
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "recorded_full_payload": null
+    },
+    "recording_on": {
+      "n": 7,
+      "median_ms": 118.73573499906342,
+      "p95_ms": 149.58529399882536,
+      "min_ms": 118.21536699972057,
+      "max_ms": 149.58529399882536,
+      "samples_ms": [
+        149.58529399882536,
+        118.73573499906342,
+        118.21536699972057,
+        122.34028800048691,
+        118.40585099889722,
+        119.52911200023664,
+        118.2324579986016
+      ],
+      "median_mib_s": 23.950245475992812,
+      "history_errors": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "recorded_bytes": 21102774,
+      "final_history_error": null,
+      "resource_before": {
+        "service": {
+          "cpu_s": 0.0,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 5767168,
+          "threads": 6
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "resource_after": {
+        "service": {
+          "cpu_s": 1.52,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 30994432,
+          "threads": 6
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "recorded_full_payload": true
+    }
+  },
+  "concurrency": [
+    {
+      "sessions": 1,
+      "recording": false,
+      "sequential_launch": {
+        "n": 1,
+        "median_ms": 5.105006999656325,
+        "p95_ms": 5.105006999656325,
+        "min_ms": 5.105006999656325,
+        "max_ms": 5.105006999656325,
+        "samples_ms": [
+          5.105006999656325
+        ]
+      },
+      "idle": {
+        "service": {
+          "cpu_s": 0.0,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 5767168,
+          "threads": 6
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "idle_cpu_percent": {
+        "service": 0.0,
+        "hosted": 0.0
+      },
+      "loaded": {
+        "service": {
+          "cpu_s": 0.03,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 13557760,
+          "threads": 6
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "sampled_peak": {
+        "service": {
+          "cpu_s": 0.03,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 13557760,
+          "threads": 6
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "output_ms": 33.09975999945891,
+      "payload_bytes": 186368,
+      "throughput_mib_s": 5.369657514220812,
+      "loaded_cpu_s": {
+        "service": 0.03,
+        "hosted": 0
+      },
+      "history_errors": [
+        null
+      ],
+      "recorded_bytes": 0
+    },
+    {
+      "sessions": 8,
+      "recording": false,
+      "sequential_launch": {
+        "n": 8,
+        "median_ms": 4.602570999850286,
+        "p95_ms": 5.379887999879429,
+        "min_ms": 3.795668999373447,
+        "max_ms": 5.379887999879429,
+        "samples_ms": [
+          5.379887999879429,
+          3.795668999373447,
+          5.359860999305965,
+          4.5528579994424945,
+          4.25247900057002,
+          4.323520999605535,
+          4.690986001151032,
+          4.652284000258078
+        ]
+      },
+      "idle": {
+        "service": {
+          "cpu_s": 0.03,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 7471104,
+          "threads": 34
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "idle_cpu_percent": {
+        "service": 0.9999185256376509,
+        "hosted": 0.0
+      },
+      "loaded": {
+        "service": {
+          "cpu_s": 0.25,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 66191360,
+          "threads": 34
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "sampled_peak": {
+        "service": {
+          "cpu_s": 0.25,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 66191360,
+          "threads": 34
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "output_ms": 92.11618500012264,
+      "payload_bytes": 1490944,
+      "throughput_mib_s": 15.43566963827374,
+      "loaded_cpu_s": {
+        "service": 0.22,
+        "hosted": 0
+      },
+      "history_errors": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "recorded_bytes": 0
+    },
+    {
+      "sessions": 32,
+      "recording": false,
+      "sequential_launch": {
+        "n": 32,
+        "median_ms": 6.057876001250406,
+        "p95_ms": 7.83379899985448,
+        "min_ms": 3.3713880002324004,
+        "max_ms": 27.298918001179118,
+        "samples_ms": [
+          4.753722001623828,
+          3.374543999598245,
+          3.3713880002324004,
+          3.5744359993259422,
+          3.638586000306532,
+          3.8024910008971347,
+          4.035044999909587,
+          4.331355999966036,
+          3.939135998734855,
+          4.683862998717814,
+          4.716233001090586,
+          4.735698999866145,
+          4.7985250002966495,
+          4.582433999530622,
+          6.087596000725171,
+          5.147775998921134,
+          6.323655999949551,
+          6.45549100045173,
+          27.298918001179118,
+          6.363339998642914,
+          6.028156001775642,
+          6.5571909999562195,
+          6.574814000487095,
+          6.403886000043713,
+          6.956215000172961,
+          6.470790000093984,
+          7.589763999931165,
+          7.727009999143775,
+          7.608067999171908,
+          7.275199001014698,
+          7.803091999448952,
+          7.83379899985448
+        ]
+      },
+      "idle": {
+        "service": {
+          "cpu_s": 0.12,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 13107200,
+          "threads": 130
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "idle_cpu_percent": {
+        "service": 0.0,
+        "hosted": 0.0
+      },
+      "loaded": {
+        "service": {
+          "cpu_s": 1.33,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 249921536,
+          "threads": 130
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "sampled_peak": {
+        "service": {
+          "cpu_s": 1.28,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 249921536,
+          "threads": 130
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "output_ms": 347.70213500087266,
+      "payload_bytes": 5963776,
+      "throughput_mib_s": 16.35739165071772,
+      "loaded_cpu_s": {
+        "service": 1.21,
+        "hosted": 0
+      },
+      "history_errors": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "recorded_bytes": 0
+    },
+    {
+      "sessions": 100,
+      "recording": false,
+      "sequential_launch": {
+        "n": 100,
+        "median_ms": 9.381656500409008,
+        "p95_ms": 14.134070999716641,
+        "min_ms": 3.0380779990082374,
+        "max_ms": 23.843873999794596,
+        "samples_ms": [
+          3.5819509994325927,
+          3.913927999747102,
+          3.0380779990082374,
+          4.56595299874607,
+          4.258470999047859,
+          4.093091998583986,
+          4.1726099989318755,
+          4.445930000656517,
+          4.390546999275102,
+          4.434708000189858,
+          4.548982000414981,
+          4.600847998517565,
+          4.543099999864353,
+          4.632566999134724,
+          5.314877000273555,
+          4.643817999749444,
+          4.849480999837397,
+          4.971588999978849,
+          22.369148000507266,
+          6.1715230003756005,
+          5.792146001112997,
+          6.151655999929062,
+          5.9317469986126525,
+          6.743608000761014,
+          6.363320000673411,
+          6.42554599835421,
+          6.823997999163112,
+          6.460822000008193,
+          7.206300000689225,
+          6.804010999985621,
+          8.273327001006692,
+          8.619260999694234,
+          7.180823000453529,
+          6.988174000071012,
+          7.991211999978987,
+          8.326075998411397,
+          7.811977999153896,
+          8.8998539995373,
+          7.7381299997796305,
+          23.843873999794596,
+          8.039692000238574,
+          8.712053999261116,
+          8.438334998572827,
+          8.015797000552993,
+          7.9127659992082044,
+          8.219205999921542,
+          8.428696000919444,
+          10.843583000678336,
+          9.273428999222233,
+          9.092992999285343,
+          9.385719000420067,
+          9.073457000340568,
+          9.299949000705965,
+          9.573397999702138,
+          10.319918999812216,
+          9.377594000397949,
+          11.734453000826761,
+          11.097816999608767,
+          10.721255999669665,
+          9.627839999666321,
+          10.72663600098167,
+          10.59730499946454,
+          10.547973000939237,
+          13.317950999407913,
+          10.42829100151721,
+          10.484525000720168,
+          10.317022999515757,
+          11.90182500067749,
+          11.144985001010355,
+          11.266752000665292,
+          12.904442000944982,
+          12.925961998917046,
+          10.814118999405764,
+          10.689446000469616,
+          11.449612000433262,
+          12.083894000170403,
+          11.832113999844296,
+          11.967677000939148,
+          10.622632000377052,
+          11.056330000428716,
+          11.539999999513384,
+          11.955534000662738,
+          21.164003999729175,
+          13.454986999931862,
+          12.384604000544641,
+          12.031856000248808,
+          13.315576999957557,
+          12.321364998570061,
+          13.075759999992442,
+          13.142674999471637,
+          12.632584999664687,
+          15.927460999591858,
+          12.853185999119887,
+          12.874505999207031,
+          15.489215000343393,
+          13.945000000603613,
+          13.021759999901406,
+          14.134070999716641,
+          13.997797001138679,
+          13.697779000722221
+        ]
+      },
+      "idle": {
+        "service": {
+          "cpu_s": 0.55,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 29097984,
+          "threads": 402
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "idle_cpu_percent": {
+        "service": 0.9999258255027639,
+        "hosted": 0.0
+      },
+      "loaded": {
+        "service": {
+          "cpu_s": 4.89,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 766685184,
+          "threads": 402
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "sampled_peak": {
+        "service": {
+          "cpu_s": 4.79,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 766685184,
+          "threads": 402
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "output_ms": 1119.0215000005992,
+      "payload_bytes": 18636800,
+      "throughput_mib_s": 15.883016992962586,
+      "loaded_cpu_s": {
+        "service": 4.34,
+        "hosted": 0
+      },
+      "history_errors": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "recorded_bytes": 0
+    },
+    {
+      "sessions": 1,
+      "recording": true,
+      "sequential_launch": {
+        "n": 1,
+        "median_ms": 6.411119999029324,
+        "p95_ms": 6.411119999029324,
+        "min_ms": 6.411119999029324,
+        "max_ms": 6.411119999029324,
+        "samples_ms": [
+          6.411119999029324
+        ]
+      },
+      "idle": {
+        "service": {
+          "cpu_s": 0.0,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 5767168,
+          "threads": 6
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "idle_cpu_percent": {
+        "service": 0.0,
+        "hosted": 0.0
+      },
+      "loaded": {
+        "service": {
+          "cpu_s": 0.03,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 13426688,
+          "threads": 6
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "sampled_peak": {
+        "service": {
+          "cpu_s": 0.03,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 13426688,
+          "threads": 6
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "output_ms": 27.63349199994991,
+      "payload_bytes": 186368,
+      "throughput_mib_s": 6.431846362389602,
+      "loaded_cpu_s": {
+        "service": 0.03,
+        "hosted": 0
+      },
+      "history_errors": [
+        null
+      ],
+      "recorded_bytes": 188464
+    },
+    {
+      "sessions": 8,
+      "recording": true,
+      "sequential_launch": {
+        "n": 8,
+        "median_ms": 5.864241500603384,
+        "p95_ms": 6.8523509999067755,
+        "min_ms": 4.9513310004840605,
+        "max_ms": 6.8523509999067755,
+        "samples_ms": [
+          5.8289450007578125,
+          5.9607809998851735,
+          5.860224000571179,
+          4.9513310004840605,
+          6.076697000025888,
+          6.8523509999067755,
+          5.367356001443113,
+          5.8682590006355895
+        ]
+      },
+      "idle": {
+        "service": {
+          "cpu_s": 0.04,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 7208960,
+          "threads": 34
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "idle_cpu_percent": {
+        "service": 0.9999276882297214,
+        "hosted": 0.0
+      },
+      "loaded": {
+        "service": {
+          "cpu_s": 0.26,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 67338240,
+          "threads": 34
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "sampled_peak": {
+        "service": {
+          "cpu_s": 0.25,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 67338240,
+          "threads": 34
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "output_ms": 94.47379899938824,
+      "payload_bytes": 1490944,
+      "throughput_mib_s": 15.050469178329616,
+      "loaded_cpu_s": {
+        "service": 0.22,
+        "hosted": 0
+      },
+      "history_errors": [
+        null,
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 31098 bytes omitted.",
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 4878 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 32016 bytes omitted."
+      ],
+      "recorded_bytes": 1439720
+    },
+    {
+      "sessions": 32,
+      "recording": true,
+      "sequential_launch": {
+        "n": 32,
+        "median_ms": 6.173827498969331,
+        "p95_ms": 9.101760000703507,
+        "min_ms": 3.697906999150291,
+        "max_ms": 23.717278998447,
+        "samples_ms": [
+          3.8178300001163734,
+          3.890965999744367,
+          4.803875999641605,
+          3.697906999150291,
+          3.946630000427831,
+          3.863234000164084,
+          4.671750000852626,
+          4.883244000666309,
+          4.489151000598213,
+          5.345694999050465,
+          4.65451800118899,
+          5.004971000744263,
+          4.945188999045058,
+          5.633389999275096,
+          6.076797000787337,
+          6.10433799920429,
+          7.506840000132797,
+          6.243316998734372,
+          23.717278998447,
+          6.513239999549114,
+          8.431292000750545,
+          7.814152000719332,
+          7.366788999206619,
+          7.5944929994875565,
+          7.5797760000568815,
+          8.181004999642028,
+          7.6197310008865315,
+          7.083591999617056,
+          7.933454000522033,
+          8.77392999973381,
+          8.741439000004902,
+          9.101760000703507
+        ]
+      },
+      "idle": {
+        "service": {
+          "cpu_s": 0.14,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 13500416,
+          "threads": 130
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "idle_cpu_percent": {
+        "service": 0.0,
+        "hosted": 0.0
+      },
+      "loaded": {
+        "service": {
+          "cpu_s": 1.21,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 258052096,
+          "threads": 130
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "sampled_peak": {
+        "service": {
+          "cpu_s": 1.16,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 258052096,
+          "threads": 130
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "output_ms": 359.95362600078806,
+      "payload_bytes": 5963776,
+      "throughput_mib_s": 15.800646497689533,
+      "loaded_cpu_s": {
+        "service": 1.0699999999999998,
+        "hosted": 0
+      },
+      "history_errors": [
+        null,
+        "Saved output writer could not keep up. Saved output gap: 4968 bytes omitted.",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 43170 bytes omitted.",
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 51083 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 11891 bytes omitted.",
+        null,
+        "Saved output writer could not keep up. Saved output gap: 12167 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 4623 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 1403 bytes omitted.",
+        null,
+        "Saved output writer could not keep up. Saved output gap: 29371 bytes omitted.",
+        null,
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 52992 bytes omitted.",
+        null,
+        "Saved output writer could not keep up. Saved output gap: 94599 bytes omitted.",
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 4899 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 6463 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 128616 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 11660 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 122084 bytes omitted."
+      ],
+      "recorded_bytes": 5450882
+    },
+    {
+      "sessions": 100,
+      "recording": true,
+      "sequential_launch": {
+        "n": 100,
+        "median_ms": 11.208197999621916,
+        "p95_ms": 18.20628499990562,
+        "min_ms": 3.550362000169116,
+        "max_ms": 33.43083900108468,
+        "samples_ms": [
+          3.615393001382472,
+          3.550362000169116,
+          3.5655609990499215,
+          3.6975659986637766,
+          4.3663220003509196,
+          5.723398999180063,
+          5.977671999062295,
+          5.177060998903471,
+          5.3368790013337275,
+          5.359730999771273,
+          5.399785999543383,
+          5.185175999940839,
+          5.466581000291626,
+          5.991427999106236,
+          6.22752799972659,
+          6.0537030003615655,
+          6.129866000264883,
+          6.50236900037271,
+          21.49217599981057,
+          6.683006000457681,
+          7.239701999424142,
+          6.945754999833298,
+          6.985710000662948,
+          8.998047000204679,
+          7.564678000562708,
+          7.2876819995144615,
+          7.549960999313043,
+          7.611924998855102,
+          7.7509950006060535,
+          8.376319001399679,
+          8.63498100079596,
+          10.040268000011565,
+          8.756987999731791,
+          9.450840998397325,
+          8.837528001095052,
+          9.019025999805308,
+          8.392379999349941,
+          8.590919000198483,
+          9.119493000980583,
+          27.318505999573972,
+          10.197601000982104,
+          9.244435999789857,
+          10.275235999870347,
+          10.52227599939215,
+          10.886202999245143,
+          11.322345000735368,
+          10.48191100016993,
+          10.895761999563547,
+          13.33186800002295,
+          11.137430999951903,
+          11.309540999718593,
+          11.046162000639015,
+          10.761712001112755,
+          11.074283998823375,
+          11.177525999300997,
+          11.35761099976662,
+          13.352175999898463,
+          12.43107099980989,
+          11.683437998726731,
+          11.907185000382015,
+          11.238869999942835,
+          11.59858999926655,
+          11.838606998935575,
+          13.220311000623042,
+          13.877624000087962,
+          12.188458998934948,
+          11.54547100122727,
+          11.896144000274944,
+          12.938906000272254,
+          11.943773000893998,
+          12.50166200043168,
+          13.534746000004816,
+          14.597305000279448,
+          12.379654999676859,
+          12.309002999245422,
+          12.220659000377054,
+          12.056311999913305,
+          12.792875000741333,
+          13.968765000754502,
+          18.20628499990562,
+          13.39943399943877,
+          14.43865999863192,
+          33.43083900108468,
+          13.247881999632227,
+          15.94011499946646,
+          13.382703000388574,
+          13.631896999868331,
+          14.17819500056794,
+          16.084274000604637,
+          13.903392000429449,
+          15.111252001588582,
+          14.208962000338943,
+          15.395440999782295,
+          15.900100999715505,
+          16.384893999202177,
+          16.665156001181458,
+          18.31319499979145,
+          16.686826000295696,
+          16.541626000616816,
+          20.194538999930955
+        ]
+      },
+      "idle": {
+        "service": {
+          "cpu_s": 0.72,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 31326208,
+          "threads": 402
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "idle_cpu_percent": {
+        "service": 0.0,
+        "hosted": 0.0
+      },
+      "loaded": {
+        "service": {
+          "cpu_s": 3.9,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 801452032,
+          "threads": 402
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "sampled_peak": {
+        "service": {
+          "cpu_s": 3.8,
+          "waited_cpu_s": 0.0,
+          "rss_bytes": 801452032,
+          "threads": 402
+        },
+        "hosted": {
+          "cpu_s": 0,
+          "rss_bytes": 0,
+          "threads": 0,
+          "processes": 0
+        }
+      },
+      "output_ms": 1193.2704860009835,
+      "payload_bytes": 18636800,
+      "throughput_mib_s": 14.894726475272389,
+      "loaded_cpu_s": {
+        "service": 3.1799999999999997,
+        "hosted": 0
+      },
+      "history_errors": [
+        "Saved output writer could not keep up. Saved output gap: 102878 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 39768 bytes omitted.",
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 109962 bytes omitted.",
+        null,
+        "Saved output writer could not keep up. Saved output gap: 96541 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 29499 bytes omitted.",
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 145567 bytes omitted.",
+        null,
+        "Saved output writer could not keep up. Saved output gap: 39399 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 12259 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 24863 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 129559 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 111159 bytes omitted.",
+        null,
+        "Saved output writer could not keep up. Saved output gap: 34985 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 134529 bytes omitted.",
+        null,
+        "Saved output writer could not keep up. Saved output gap: 50807 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 123211 bytes omitted.",
+        null,
+        "Saved output writer could not keep up. Saved output gap: 105181 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 46853 bytes omitted.",
+        null,
+        "Saved output writer could not keep up. Saved output gap: 12443 bytes omitted.",
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 39123 bytes omitted.",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 53291 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 25049 bytes omitted.",
+        null,
+        null,
+        null,
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 25863 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 22195 bytes omitted.",
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 30199 bytes omitted.",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 28911 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 26128 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 117323 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 12811 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 18699 bytes omitted.",
+        null,
+        "Saved output writer could not keep up. Saved output gap: 106007 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 115391 bytes omitted.",
+        null,
+        null,
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 23385 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 124223 bytes omitted.",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 97819 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 140783 bytes omitted.",
+        null,
+        null,
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 119441 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 120267 bytes omitted.",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "Saved output writer could not keep up. Saved output gap: 33327 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 42251 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 3795 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 55775 bytes omitted.",
+        "Saved output writer could not keep up. Saved output gap: 5636 bytes omitted."
+      ],
+      "recorded_bytes": 16109337
+    }
+  ]
+}

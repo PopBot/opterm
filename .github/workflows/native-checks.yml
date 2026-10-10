@@ -102,3 +102,89 @@ jobs:
             ~/.cargo/git/db
             target/debug
           key: ${{ steps.cache.outputs.cache-primary-key }}
+
+  package:
+    name: Package ${{ matrix.platform }} / ${{ matrix.arch }}
+    needs: native
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux
+            arch: x86_64
+          - runner: macos-15
+            platform: macos
+            arch: aarch64
+          - runner: macos-15-intel
+            platform: macos
+            arch: x86_64
+          - runner: windows-2025
+            platform: windows
+            arch: x86_64
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Linux build and package GUI prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential pkg-config libx11-dev libxi-dev libxcursor-dev \
+            libxrandr-dev libxinerama-dev libgl1-mesa-dev libwayland-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev xvfb x11-apps libxtst6 xclip fonts-dejavu-core fonts-noto-cjk
+      - name: Install stable Rust
+        id: rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          echo "version=$(rustc --version | tr ' ' '-')" >> "$GITHUB_OUTPUT"
+      - name: Reuse native release dependencies
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target/release
+          key: package-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+      - name: Build native optimized prototype
+        run: cargo build --release --locked
+      - name: Package executable, runtime docs and licenses
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then python scripts/package.py; else python3 scripts/package.py; fi
+      - name: Validate extracted Linux package and session continuity
+        if: runner.os == 'Linux'
+        timeout-minutes: 3
+        run: |
+          mkdir target/package-check
+          tar -xzf target/dist/opterm-*-linux-x86_64.tar.gz -C target/package-check
+          python3 scripts/smoke_gui.py --controls-only "$(find "$PWD/target/package-check" -type f -name opterm)"
+      - name: Upload unsigned native prototype
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: opterm-${{ matrix.platform }}-${{ matrix.arch }}
+          path: target/dist/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Preserve native release dependencies
+        if: ${{ always() && !cancelled() && steps.rust.outcome == 'success' && steps.cache.outcome == 'success' && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target/release
+          key: ${{ steps.cache.outputs.cache-primary-key }}

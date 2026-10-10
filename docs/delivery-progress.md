@@ -8,7 +8,7 @@ The user authorized completing the remaining phases in order, committing and pus
 | 2 | Tab reorder, tab movement between windows, drag-out, scrollback search | Complete; 47 Rust tests, strict Clippy and focused native controls checks passed |
 | 3 | Custom settings/cache location and bounded saved-output controls | Complete; 60 Rust tests, strict Clippy and native storage checks passed |
 | 4 | Native platform checks and demonstrated fixes | Complete; native Linux, both Mac architectures and Windows checks passed |
-| 5 | Reproducible performance measurement, measured optimization, packaging | Not started |
+| 5 | Reproducible performance measurement, measured optimization, packaging | In progress; matched local measurements and native archive builds |
 
 ## Phase 1
 

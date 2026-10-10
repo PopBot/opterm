@@ -2,7 +2,7 @@
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -16,6 +16,8 @@ use std::{
 };
 
 const MIB: u64 = 1024 * 1024;
+const QUEUED_BYTES: usize = 1024 * 1024;
+const WRITE_BATCH: usize = 512 * 1024;
 /// History cells exclude the live screen, which is separately capped at 500×200.
 pub const MAX_HISTORY_CELLS: usize = 1_000_000;
 
@@ -145,10 +147,11 @@ struct Shared {
     error: Mutex<Option<String>>,
     dropped: AtomicU64,
     options: Mutex<Options>,
+    queued: Mutex<VecDeque<u8>>,
 }
 #[derive(Clone)]
 pub struct Recorder {
-    sender: Option<SyncSender<Vec<u8>>>,
+    sender: Option<SyncSender<()>>,
     shared: Arc<Shared>,
 }
 impl Recorder {
@@ -160,6 +163,7 @@ impl Recorder {
             error: Mutex::new(None),
             dropped: AtomicU64::new(0),
             options: Mutex::new(options),
+            queued: Mutex::new(VecDeque::with_capacity(QUEUED_BYTES)),
         });
         let mut recorder = Self {
             sender: None,
@@ -172,25 +176,30 @@ impl Recorder {
                 return recorder;
             }
         };
-        let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(128);
+        // A single bounded wake token signals a fixed-capacity byte ring. Small
+        // PTY reads no longer consume an entire message slot each.
+        let (sender, receiver) = mpsc::sync_channel::<()>(1);
         let spawned = thread::Builder::new()
             .name("opterm-output-write".into())
             .spawn(move || {
                 active().lock().unwrap().insert(path.clone());
                 let mut maintenance = SystemTime::now();
                 loop {
-                    let bytes = match receiver.recv_timeout(Duration::from_secs(1)) {
-                        Ok(mut bytes) => {
-                            for _ in 0..63 {
-                                let Ok(next) = receiver.try_recv() else {
-                                    break;
-                                };
-                                bytes.extend_from_slice(&next);
-                            }
-                            Some(bytes)
+                    let take_batch = || {
+                        // This lock only moves bytes in memory. All filesystem
+                        // work happens after releasing it.
+                        let mut queued = shared.queued.lock().unwrap();
+                        let count = queued.len().min(WRITE_BATCH);
+                        (count > 0).then(|| queued.drain(..count).collect::<Vec<_>>())
+                    };
+                    let bytes = if let Some(bytes) = take_batch() {
+                        Some(bytes)
+                    } else {
+                        match receiver.recv_timeout(Duration::from_secs(1)) {
+                            Ok(()) => take_batch(),
+                            Err(mpsc::RecvTimeoutError::Timeout) => None,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         }
-                        Err(mpsc::RecvTimeoutError::Timeout) => None,
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     };
                     if bytes.is_none() && shared.finished.load(Ordering::Relaxed) {
                         break;
@@ -300,13 +309,26 @@ impl Recorder {
             return;
         }
         if let Some(sender) = &self.sender {
-            // At most 1 MiB queued per session, regardless of the caller's chunk size.
-            for chunk in bytes.chunks(8192) {
-                if sender.try_send(chunk.to_vec()).is_err() {
-                    self.shared
-                        .dropped
-                        .fetch_add(chunk.len() as u64, Ordering::Relaxed);
-                }
+            // At most 1 MiB queued, independent of fragment count, plus a single
+            // wake token and a worker batch capped at 512 KiB. Never wait for
+            // disk I/O or for free queue capacity.
+            let accepted = {
+                let mut queued = self.shared.queued.lock().unwrap();
+                let accepted = bytes.len().min(QUEUED_BYTES - queued.len());
+                queued.extend(&bytes[..accepted]);
+                accepted
+            };
+            self.shared
+                .dropped
+                .fetch_add((bytes.len() - accepted) as u64, Ordering::Relaxed);
+            if matches!(
+                sender.try_send(()),
+                Err(mpsc::TrySendError::Disconnected(()))
+            ) {
+                self.shared
+                    .dropped
+                    .fetch_add(accepted as u64, Ordering::Relaxed);
+                self.shared.enabled.store(false, Ordering::Relaxed);
             }
         }
     }
@@ -333,5 +355,34 @@ mod tests {
         recorder.finish();
         recorder.set_enabled(true);
         assert!(!recorder.enabled());
+    }
+    #[test]
+    fn fragmented_output_uses_byte_capacity_instead_of_message_slots() {
+        let directory = tempfile::tempdir().unwrap();
+        let guard = disk_lock().lock().unwrap();
+        let recorder = Recorder::new(directory.path().join("history"), Options::default());
+        // 4096 fragments fill only 256 KiB; a 128-message queue loses output here.
+        for _ in 0..4096 {
+            recorder.record(&[b'x'; 64]);
+        }
+        assert!(recorder.error().is_none());
+        assert!(recorder.shared.queued.lock().unwrap().len() <= QUEUED_BYTES);
+        recorder.finish();
+        drop(guard);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let captured = fs::read_dir(directory.path().join("history"))
+                .ok()
+                .and_then(|mut files| files.next())
+                .and_then(|entry| fs::read(entry.ok()?.path()).ok());
+            if let Some(bytes) = captured
+                && bytes.len() == 4096 * 64
+            {
+                assert!(bytes.iter().all(|byte| *byte == b'x'));
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }

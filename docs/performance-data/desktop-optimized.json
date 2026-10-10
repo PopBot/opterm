@@ -1,0 +1,99 @@
+{
+  "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+  "binary": "/home/jarod/Dev/extdev/projects/opterm/target/release/opterm",
+  "renderer": "Xvfb; LIBGL_ALWAYS_SOFTWARE=1",
+  "repetitions": 5,
+  "opterm_cold": [
+    {
+      "shell_ready_ms": 163.58093199960422,
+      "visible_output_ms": 250.39481000021624
+    },
+    {
+      "shell_ready_ms": 189.5558410014928,
+      "visible_output_ms": 272.3986450000666
+    },
+    {
+      "shell_ready_ms": 186.90146999870194,
+      "visible_output_ms": 281.38130699881003
+    },
+    {
+      "shell_ready_ms": 177.0042989992362,
+      "visible_output_ms": 281.7797299994709
+    },
+    {
+      "shell_ready_ms": 199.90904299993417,
+      "visible_output_ms": 286.2842040012765
+    }
+  ],
+  "opterm_reconnect": [
+    {
+      "shell_ready_ms": null,
+      "visible_output_ms": 151.50947899928724
+    },
+    {
+      "shell_ready_ms": null,
+      "visible_output_ms": 155.35881799951312
+    },
+    {
+      "shell_ready_ms": null,
+      "visible_output_ms": 160.38581800057727
+    },
+    {
+      "shell_ready_ms": null,
+      "visible_output_ms": 162.19695300060266
+    },
+    {
+      "shell_ready_ms": null,
+      "visible_output_ms": 153.8134300008096
+    }
+  ],
+  "gnome_cold": [],
+  "opterm_idle": {
+    "seconds": 5.000093591999757,
+    "processes": [
+      {
+        "pid": 416800,
+        "command": "opterm",
+        "rss_mib": 161.42,
+        "cpu_percent_one_core": 34.8
+      },
+      {
+        "pid": 416851,
+        "command": "opterm",
+        "rss_mib": 8.59,
+        "cpu_percent_one_core": 0.8
+      },
+      {
+        "pid": 416855,
+        "command": "sh",
+        "rss_mib": 1.82,
+        "cpu_percent_one_core": 0.0
+      }
+    ]
+  },
+  "summary_ms": {
+    "opterm_cold": {
+      "shell_ready_ms": {
+        "median": 186.9,
+        "minimum": 163.58,
+        "maximum": 199.91
+      },
+      "visible_output_ms": {
+        "median": 281.38,
+        "minimum": 250.39,
+        "maximum": 286.28
+      }
+    },
+    "opterm_reconnect": {
+      "visible_output_ms": {
+        "median": 155.36,
+        "minimum": 151.51,
+        "maximum": 162.2
+      }
+    }
+  },
+  "binary_sha256": "798a3413a2ec9dd7a0d1d61bfe04cb0146d3c24edaca278a8d1fa7cec1cc9003",
+  "measurement_date": "2026-10-09 UTC",
+  "build_command": "cargo build --release --locked",
+  "cpu_model": "AMD Ryzen 7 2700X, 8 cores, 16 threads"
+}

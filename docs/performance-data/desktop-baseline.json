@@ -1,0 +1,162 @@
+{
+  "platform": "Linux-6.8.0-146-generic-x86_64-with-glibc2.39",
+  "binary": "/home/jarod/Dev/extdev/projects/opterm/target/opterm-desktop-baseline",
+  "renderer": "Xvfb; LIBGL_ALWAYS_SOFTWARE=1",
+  "repetitions": 5,
+  "opterm_cold": [
+    {
+      "shell_ready_ms": 170.39963199931663,
+      "visible_output_ms": 252.5860530004138
+    },
+    {
+      "shell_ready_ms": 179.14804800057027,
+      "visible_output_ms": 257.0374779988924
+    },
+    {
+      "shell_ready_ms": 172.05594899860444,
+      "visible_output_ms": 259.337602999949
+    },
+    {
+      "shell_ready_ms": 177.43777099894942,
+      "visible_output_ms": 269.2437039986544
+    },
+    {
+      "shell_ready_ms": 178.01785499977996,
+      "visible_output_ms": 260.3923410006246
+    }
+  ],
+  "opterm_reconnect": [
+    {
+      "shell_ready_ms": null,
+      "visible_output_ms": 163.63713500140875
+    },
+    {
+      "shell_ready_ms": null,
+      "visible_output_ms": 154.0169159998186
+    },
+    {
+      "shell_ready_ms": null,
+      "visible_output_ms": 158.28406399850792
+    },
+    {
+      "shell_ready_ms": null,
+      "visible_output_ms": 149.41942199948244
+    },
+    {
+      "shell_ready_ms": null,
+      "visible_output_ms": 135.49225400129217
+    }
+  ],
+  "gnome_cold": [
+    {
+      "shell_ready_ms": 428.82023099991784,
+      "visible_output_ms": 439.8231659997691
+    },
+    {
+      "shell_ready_ms": 498.2623830001103,
+      "visible_output_ms": 509.02332800069416
+    },
+    {
+      "shell_ready_ms": 424.2121160004899,
+      "visible_output_ms": 435.50529300046037
+    },
+    {
+      "shell_ready_ms": 393.2153810001182,
+      "visible_output_ms": 404.01853900038986
+    },
+    {
+      "shell_ready_ms": 382.1703070007061,
+      "visible_output_ms": 393.1395190011244
+    }
+  ],
+  "opterm_idle": {
+    "seconds": 5.000074444000347,
+    "processes": [
+      {
+        "pid": 415344,
+        "command": "opterm-desktop-",
+        "rss_mib": 161.45,
+        "cpu_percent_one_core": 859.79
+      },
+      {
+        "pid": 415380,
+        "command": "opterm-desktop-",
+        "rss_mib": 10.43,
+        "cpu_percent_one_core": 0.6
+      },
+      {
+        "pid": 415384,
+        "command": "sh",
+        "rss_mib": 1.82,
+        "cpu_percent_one_core": 0.0
+      }
+    ]
+  },
+  "gnome_idle": {
+    "seconds": 5.00007749499855,
+    "processes": [
+      {
+        "pid": 416014,
+        "command": "dbus-run-sessio",
+        "rss_mib": 2.54,
+        "cpu_percent_one_core": 0.0
+      },
+      {
+        "pid": 416015,
+        "command": "dbus-daemon",
+        "rss_mib": 5.0,
+        "cpu_percent_one_core": 0.0
+      },
+      {
+        "pid": 416016,
+        "command": "gnome-terminal",
+        "rss_mib": 20.72,
+        "cpu_percent_one_core": 0.0
+      },
+      {
+        "pid": 416017,
+        "command": "gnome-terminal.",
+        "rss_mib": 20.18,
+        "cpu_percent_one_core": 0.0
+      }
+    ],
+    "scope": "Partial launcher/bus tree; detached server not captured. Do not compare native CPU/RSS from this entry."
+  },
+  "summary_ms": {
+    "opterm_cold": {
+      "shell_ready_ms": {
+        "median": 177.44,
+        "minimum": 170.4,
+        "maximum": 179.15
+      },
+      "visible_output_ms": {
+        "median": 259.34,
+        "minimum": 252.59,
+        "maximum": 269.24
+      }
+    },
+    "opterm_reconnect": {
+      "visible_output_ms": {
+        "median": 154.02,
+        "minimum": 135.49,
+        "maximum": 163.64
+      }
+    },
+    "gnome_cold": {
+      "shell_ready_ms": {
+        "median": 424.21,
+        "minimum": 382.17,
+        "maximum": 498.26
+      },
+      "visible_output_ms": {
+        "median": 435.51,
+        "minimum": 393.14,
+        "maximum": 509.02
+      }
+    }
+  },
+  "binary_sha256": "e1bce466c2d74d85f2b0d62dc9e045d744c0bfc83bc9ce696e3de5a1333dbde0",
+  "measurement_date": "2026-10-09 UTC",
+  "build_command": "cargo build --release --locked",
+  "cpu_model": "AMD Ryzen 7 2700X, 8 cores, 16 threads"
+}
